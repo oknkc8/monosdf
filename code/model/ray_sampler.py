@@ -14,12 +14,18 @@ class RaySampler(metaclass=abc.ABCMeta):
         pass
 
 class UniformSampler(RaySampler):
-    def __init__(self, scene_bounding_sphere, near, N_samples, take_sphere_intersection=False, far=-1):
+    def __init__(self, scene_bounding_sphere, near, N_samples, take_sphere_intersection=False, far=-1, 
+                 anneal_near_far=False, anneal_n_steps=2000, anneal_init_perc=0.2, anneal_mid_perc=0.5):
         #super().__init__(near, 2.0 * scene_bounding_sphere if far == -1 else far)  # default far is 2*R
         super().__init__(near, 2.0 * scene_bounding_sphere * 1.75 if far == -1 else far)  # default far is 2*R
         self.N_samples = N_samples
         self.scene_bounding_sphere = scene_bounding_sphere
         self.take_sphere_intersection = take_sphere_intersection
+
+        self.anneal_near_far = anneal_near_far
+        self.anneal_n_steps = anneal_n_steps
+        self.anneal_init_perc = anneal_init_perc
+        self.anneal_mid_perc = anneal_mid_perc
 
     # dtu and bmvs
     def get_z_vals_dtu_bmvs(self, ray_dirs, cam_loc, model):
@@ -59,13 +65,30 @@ class UniformSampler(RaySampler):
         far = torch.clamp(far, max=self.far)
         return near, far
 
+    # anneals near and far plane (borrowed from RegNeRF)
+    def anneal_near_fear(self, iter, near_final, far_final, n_steps=2000, init_perc=0.2, mid_perc=0.5):
+        mid = near_final + mid_perc * (far_final - near_final)
+
+        near_init = mid + init_perc * (near_final - mid)
+        far_init = mid + init_perc * (far_final - mid)
+
+        weight = min(iter * 1.0 / n_steps, 1.0)
+
+        near = near_init + weight * (near_final - near_init)
+        far = far_init + weight * (far_final - far_init)
+
+        return near, far         
+
     # currently this is used for replica scannet and T&T
-    def get_z_vals(self, ray_dirs, cam_loc, model):
+    def get_z_vals(self, ray_dirs, cam_loc, model, iter=0):
         if not self.take_sphere_intersection:
             near, far = self.near * torch.ones(ray_dirs.shape[0], 1).cuda(), self.far * torch.ones(ray_dirs.shape[0], 1).cuda()
         else:
             _, far = self.near_far_from_cube(cam_loc, ray_dirs, bound=self.scene_bounding_sphere)
             near = self.near * torch.ones(ray_dirs.shape[0], 1).cuda()
+
+        if self.anneal_near_fear:
+            near, far = self.anneal_near_fear(iter, near, far, self.anneal_n_steps, self.anneal_init_perc, self.anneal_mid_perc)
         
         t_vals = torch.linspace(0., 1., steps=self.N_samples).cuda()
         z_vals = near * (1. - t_vals) + far * (t_vals)
@@ -86,13 +109,18 @@ class UniformSampler(RaySampler):
 class ErrorBoundSampler(RaySampler):
     def __init__(self, scene_bounding_sphere, near, N_samples, N_samples_eval, N_samples_extra,
                  eps, beta_iters, max_total_iters,
-                 inverse_sphere_bg=False, N_samples_inverse_sphere=0, add_tiny=1.0e-6):
+                 inverse_sphere_bg=False, N_samples_inverse_sphere=0, add_tiny=1.0e-6,
+                 anneal_near_far=False, anneal_n_steps=2000, anneal_init_perc=0.2, anneal_mid_perc=0.5):
         #super().__init__(near, 2.0 * scene_bounding_sphere)
         super().__init__(near, 2.0 * scene_bounding_sphere * 1.75)
         
         self.N_samples = N_samples
         self.N_samples_eval = N_samples_eval
-        self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=True) # replica scannet and T&T courtroom
+        self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=True,
+                                              anneal_near_far=anneal_near_far,
+                                              anneal_n_steps=anneal_n_steps,
+                                              anneal_init_perc=anneal_init_perc,
+                                              anneal_mid_perc=anneal_mid_perc) # replica scannet and T&T courtroom
         #self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=inverse_sphere_bg)  # dtu and bmvs
 
         self.N_samples_extra = N_samples_extra
@@ -105,7 +133,11 @@ class ErrorBoundSampler(RaySampler):
 
         self.inverse_sphere_bg = inverse_sphere_bg
         if inverse_sphere_bg:
-            self.inverse_sphere_sampler = UniformSampler(1.0, 0.0, N_samples_inverse_sphere, False, far=1.0)
+            self.inverse_sphere_sampler = UniformSampler(1.0, 0.0, N_samples_inverse_sphere, False, far=1.0,
+                                                         anneal_near_far=anneal_near_far,
+                                                         anneal_n_steps=anneal_n_steps,
+                                                         anneal_init_perc=anneal_init_perc,
+                                                         anneal_mid_perc=anneal_mid_perc)
 
     def get_z_vals(self, ray_dirs, cam_loc, model):
         beta0 = model.density.get_beta().detach()

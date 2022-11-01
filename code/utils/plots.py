@@ -9,6 +9,7 @@ import cv2
 
 from utils import rend_util
 from utils.general import trans_topil
+import pdb
 
 
 def plot(implicit_network, indices, plot_data, path, epoch, img_res, plot_nimgs, resolution, grid_boundary,  level=0):
@@ -28,10 +29,10 @@ def plot(implicit_network, indices, plot_data, path, epoch, img_res, plot_nimgs,
         # concat output images to single large image
         images = []
         for name in ["rendering", "depth", "normal"]:
-            images.append(cv2.imread('{0}/{1}_{2}_{3}.png'.format(path, name, epoch, indices[0])))        
+            images.append(cv2.imread('{0}/{1}/{1}_{2}_{3}.png'.format(path, name, epoch, indices[0])))        
 
         images = np.concatenate(images, axis=1)
-        cv2.imwrite('{0}/merge_{1}_{2}.png'.format(path, epoch, indices[0]), images)
+        cv2.imwrite('{0}/merge/merge_{1}_{2}.png'.format(path, epoch, indices[0]), images)
 
     surface_traces = get_surface_sliding(path=path,
                                          epoch=epoch,
@@ -147,7 +148,7 @@ def get_surface_sliding(path, epoch, sdf, resolution=100, grid_boundary=[-2.0, 2
     if return_mesh:
         return combined
     else:
-        combined.export('{0}/surface_{1}.ply'.format(path, epoch), 'ply')    
+        combined.export('{0}/surface/surface_{1}.ply'.format(path, epoch), 'ply')    
         
 def get_3D_scatter_trace(points, name='', size=3, caption=None):
     assert points.shape[1] == 3, "3d scatter plot input points are not correctely shaped "
@@ -476,7 +477,7 @@ def plot_normal_maps(normal_maps, ground_true, path, epoch, plot_nrow, img_res, 
     tensor = (tensor * scale_factor).astype(np.uint8)
 
     img = Image.fromarray(tensor)
-    img.save('{0}/normal_{1}_{2}.png'.format(path, epoch, indices[0]))
+    img.save('{0}/normal/normal_{1}_{2}.png'.format(path, epoch, indices[0]))
 
     #import pdb; pdb.set_trace()
     #trans_topil(normal_maps_plot[0, :, :, 260:260+680]).save('{0}/2normal_{1}.png'.format(path, epoch))
@@ -499,13 +500,15 @@ def plot_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res, indice
 
     img = Image.fromarray(tensor)
     if exposure:
-        img.save('{0}/exposure_{1}_{2}.png'.format(path, epoch, indices[0]))
+        img.save('{0}/rendering/exposure_{1}_{2}.png'.format(path, epoch, indices[0]))
     else:
-        img.save('{0}/rendering_{1}_{2}.png'.format(path, epoch, indices[0]))
+        img.save('{0}/rendering/rendering_{1}_{2}.png'.format(path, epoch, indices[0]))
 
 
 def plot_depth_maps(depth_maps, ground_true, path, epoch, plot_nrow, img_res, indices):
     ground_true = ground_true.cuda()
+    depth_maps = normalize_img(depth_maps)
+    ground_true = normalize_img(ground_true)
     depth_maps = torch.cat((depth_maps[..., None], ground_true), dim=0)
     depth_maps_plot = lin2img(depth_maps, img_res)
     depth_maps_plot = depth_maps_plot.expand(-1, 3, -1, -1)
@@ -516,7 +519,7 @@ def plot_depth_maps(depth_maps, ground_true, path, epoch, plot_nrow, img_res, in
                                          nrow=plot_nrow).cpu().detach().numpy()
     tensor = tensor.transpose(1, 2, 0)
     
-    save_path = '{0}/depth_{1}_{2}.png'.format(path, epoch, indices[0])
+    save_path = '{0}/depth/depth_{1}_{2}.png'.format(path, epoch, indices[0])
     
     plt.imsave(save_path, tensor[:, :, 0], cmap='viridis')
     
@@ -524,3 +527,8 @@ def plot_depth_maps(depth_maps, ground_true, path, epoch, plot_nrow, img_res, in
 def lin2img(tensor, img_res):
     batch_size, num_samples, channels = tensor.shape
     return tensor.permute(0, 2, 1).view(batch_size, channels, img_res[0], img_res[1])
+
+def normalize_img(tensor):
+    tensor -= torch.min(tensor)
+    tensor /= max(torch.max(tensor).item(), 1e-12)
+    return tensor

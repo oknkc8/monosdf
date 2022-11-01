@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import utils.general as utils
 import math
+import pdb
+import torchvision.transforms
 
 # copy from MiDaS
 def compute_scale_and_shift(prediction, target, mask):
@@ -146,14 +148,27 @@ class ScaleAndShiftInvariantLoss(nn.Module):
 class MonoSDFLoss(nn.Module):
     def __init__(self, rgb_loss, 
                  eikonal_weight, 
-                 smooth_weight = 0.005,
+                 normal_smooth_weight = 0.005,
+                 patch_depth_smooth_weight = 0.005,
+                 patch_normal_smooth_weight = 0.005,
+                 entropy_weight=0.001,
+                 entropy_log_scaling=False,
+                 entropy_acc_thresh=0.01,
+                 patch_rgb_ncc_weight=0.01,
                  depth_weight = 0.1,
                  normal_l1_weight = 0.05,
                  normal_cos_weight = 0.05,
-                 end_step = -1):
+                 end_step = -1,
+                 start_reg_step=500):
         super().__init__()
         self.eikonal_weight = eikonal_weight
-        self.smooth_weight = smooth_weight
+        self.normal_smooth_weight = normal_smooth_weight
+        self.patch_depth_smooth_weight = patch_depth_smooth_weight
+        self.patch_normal_smooth_weight = patch_normal_smooth_weight
+        self.entropy_weight = entropy_weight
+        self.entropy_log_scaling = entropy_log_scaling
+        self.entropy_acc_thresh = entropy_acc_thresh
+        self.patch_rgb_ncc_weight = patch_rgb_ncc_weight
         self.depth_weight = depth_weight
         self.normal_l1_weight = normal_l1_weight
         self.normal_cos_weight = normal_cos_weight
@@ -161,10 +176,11 @@ class MonoSDFLoss(nn.Module):
         
         self.depth_loss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
         
-        print(f"using weight for loss RGB_1.0 EK_{self.eikonal_weight} SM_{self.smooth_weight} Depth_{self.depth_weight} NormalL1_{self.normal_l1_weight} NormalCos_{self.normal_cos_weight}")
+        print(f"using weight for loss RGB_1.0 EK_{self.eikonal_weight} NSM_{self.normal_smooth_weight} PDSM_{self.patch_depth_smooth_weight} PNSM_{self.patch_normal_smooth_weight} Depth_{self.depth_weight} NormalL1_{self.normal_l1_weight} NormalCos_{self.normal_cos_weight}")
         
         self.step = 0
         self.end_step = end_step
+        self.start_reg_step = start_reg_step
 
     def get_rgb_loss(self,rgb_values, rgb_gt):
         rgb_gt = rgb_gt.reshape(-1, 3)
@@ -175,7 +191,7 @@ class MonoSDFLoss(nn.Module):
         eikonal_loss = ((grad_theta.norm(2, dim=1) - 1) ** 2).mean()
         return eikonal_loss
 
-    def get_smooth_loss(self,model_outputs):
+    def get_normal_smooth_loss(self,model_outputs):
         # smoothness loss as unisurf
         g1 = model_outputs['grad_theta']
         g2 = model_outputs['grad_theta_nei']
@@ -184,6 +200,176 @@ class MonoSDFLoss(nn.Module):
         normals_2 = g2 / (g2.norm(2, dim=1).unsqueeze(-1) + 1e-5)
         smooth_loss =  torch.norm(normals_1 - normals_2, dim=-1).mean()
         return smooth_loss
+    
+    def get_patch_depth_smooth_loss(self, model_outputs, patch_size):
+        depth = model_outputs['patch_depth_values'].reshape(-1, patch_size, patch_size) # (B, PS, PS)
+        acc = model_outputs['patch_acc'].reshape(-1, patch_size, patch_size)
+        mask = (acc > 0.95).detach()
+        
+        d00 = depth[:, :-1, :-1]
+        d01 = depth[:, :-1, 1:]
+        d10 = depth[:, 1:, :-1]
+
+        m00 = mask[:, :-1, :-1]
+        m01 = mask[:, :-1, 1:]
+        m10 = mask[:, 1:, :-1]
+        
+        # patch_depth_loss = (((d00 - d01) ** 2) + ((d00 - d10) ** 2))
+        patch_depth_loss = torch.abs(d00 - d01) * torch.mul(m00, m01) + torch.abs(d00 - d10) * torch.mul(m00, m10)
+
+        if model_outputs['unseen_patch_depth_values'] is not None:
+            unseen_depth = model_outputs['unseen_patch_depth_values'].reshape(-1, patch_size, patch_size) # (B, PS, PS)
+            acc = model_outputs['unseen_patch_acc'].reshape(-1, patch_size, patch_size)
+            mask = (acc > 0.95).detach()
+            
+            ud00 = unseen_depth[:, :-1, :-1]
+            ud01 = unseen_depth[:, :-1, 1:]
+            ud10 = unseen_depth[:, 1:, :-1]
+
+            m00 = mask[:, :-1, :-1]
+            m01 = mask[:, :-1, 1:]
+            m10 = mask[:, 1:, :-1]
+            
+            # unseen_patch_depth_loss = (((ud00 - ud01) ** 2) + ((ud00 - ud10) ** 2))
+            unseen_patch_depth_loss = torch.abs(ud00 - ud01) * torch.mul(m00, m01) + torch.abs(ud00 - ud10) * torch.mul(m00, m10)
+            patch_depth_loss = torch.cat([patch_depth_loss, unseen_patch_depth_loss], dim=0)
+
+        patch_depth_loss = patch_depth_loss.mean()
+        return patch_depth_loss
+    
+    def get_patch_normal_smooth_loss(self, model_outputs, patch_size):
+        normal = model_outputs['patch_normal_map'].reshape(-1, patch_size, patch_size, 3) # (B, PS, PS, 3)
+        normal = torch.nn.functional.normalize(normal, p=2, dim=-1)
+
+        acc = model_outputs['patch_acc'].reshape(-1, patch_size, patch_size)
+        mask = (acc > 0.95).detach()
+        
+        n00 = torch.nn.functional.normalize(normal[:, :-1, :-1], p=2, dim=-1)
+        n01 = torch.nn.functional.normalize(normal[:, :-1, 1:], p=2, dim=-1)
+        n10 = torch.nn.functional.normalize(normal[:, 1:, :-1], p=2, dim=-1)
+
+        m00 = mask[:, :-1, :-1]
+        m01 = mask[:, :-1, 1:]
+        m10 = mask[:, 1:, :-1]
+        # n01 = normal[:, :-1, 1:]
+        # n10 = normal[:, 1:, :-1]
+        
+        # n00 = n00 / (n00.norm(2,dim=-1).unsqueeze(-1) + 1e-5)
+        # n01 = n01 / (n01.norm(2,dim=-1).unsqueeze(-1) + 1e-5)
+        # n10 = n10 / (n10.norm(2,dim=-1).unsqueeze(-1) + 1e-5)
+        
+        # normal_loss01 = torch.norm(n00 - n01, dim=-1)
+        # normal_loss10 = torch.norm(n00 - n10, dim=-1)
+        # patch_normal_loss = (normal_loss01 + normal_loss10)
+
+        normal_loss01 = (torch.abs(n00 - n01).sum(dim=-1) + (1. - torch.sum(n00 * n01, dim=-1))) * torch.mul(m00, m01)
+        normal_loss10 = (torch.abs(n00 - n10).sum(dim=-1) + (1. - torch.sum(n00 * n10, dim=-1))) * torch.mul(m00, m10)
+        patch_normal_loss = (normal_loss01 + normal_loss10)
+
+        if model_outputs['unseen_patch_normal_map'] is not None:
+            unseen_normal = model_outputs['unseen_patch_normal_map'].reshape(-1, patch_size, patch_size, 3) # (B, PS, PS, 3)
+            
+            # un00 = unseen_normal[:, :-1, :-1]
+            # un01 = unseen_normal[:, :-1, 1:]
+            # un10 = unseen_normal[:, 1:, :-1]
+            
+            # un00 = un00 / (un00.norm(2,dim=-1).unsqueeze(-1) + 1e-5)
+            # un01 = un01 / (un01.norm(2,dim=-1).unsqueeze(-1) + 1e-5)
+            # un10 = un10 / (un10.norm(2,dim=-1).unsqueeze(-1) + 1e-5)
+            
+            # unseen_normal_loss01 = torch.norm(un00 - un01, dim=-1)
+            # unseen_normal_loss10 = torch.norm(un00 - un10, dim=-1)
+            # unseen_patch_normal_loss = (unseen_normal_loss01 + unseen_normal_loss10)
+
+            unseen_normal = torch.nn.functional.normalize(unseen_normal, p=2, dim=-1)
+
+            acc = model_outputs['unseen_patch_acc'].reshape(-1, patch_size, patch_size)
+            mask = (acc > 0.95).detach()
+            
+            un00 = torch.nn.functional.normalize(unseen_normal[:, :-1, :-1], p=2, dim=-1)
+            un01 = torch.nn.functional.normalize(unseen_normal[:, :-1, 1:], p=2, dim=-1)
+            un10 = torch.nn.functional.normalize(unseen_normal[:, 1:, :-1], p=2, dim=-1)
+
+            m00 = mask[:, :-1, :-1]
+            m01 = mask[:, :-1, 1:]
+            m10 = mask[:, 1:, :-1]
+
+            unseen_normal_loss01 = (torch.abs(un00 - un01).sum(dim=-1) + (1. - torch.sum(un00 * un01, dim=-1))) * torch.mul(m00, m01)
+            unseen_normal_loss10 = (torch.abs(un00 - un10).sum(dim=-1) + (1. - torch.sum(un00 * un10, dim=-1))) * torch.mul(m00, m10)
+            unseen_patch_normal_loss = (unseen_normal_loss01 + unseen_normal_loss10)
+            
+            patch_normal_loss = torch.cat([patch_normal_loss, unseen_patch_normal_loss], dim=0)
+
+        patch_normal_loss = patch_normal_loss.mean()
+        return patch_normal_loss
+
+    def get_entropy_loss(self, model_outputs):
+        # seen
+        sigma = model_outputs['sigma']
+        acc = model_outputs['acc']
+
+        ray_prob = sigma / (torch.sum(sigma, -1).unsqueeze(-1) + 1e-10)
+        ray_entropy = self.entropy(ray_prob)
+
+        # thershold by accuracy
+        mask = (acc > self.entropy_acc_thresh).detach().unsqueeze(-1)
+        ray_entropy *= mask
+        
+        # unseen
+        if model_outputs['unseen_sigma'] is not None:
+            unseen_sigma = model_outputs['unseen_sigma']
+            unseen_acc = model_outputs['unseen_acc']
+
+            unseen_ray_prob = unseen_sigma / (torch.sum(unseen_sigma, -1).unsqueeze(-1) + 1e-10)
+            unseen_ray_entropy = self.entropy(unseen_ray_prob)
+
+            # thershold by accuracy
+            mask = (unseen_acc > self.entropy_acc_thresh).detach().unsqueeze(-1)
+            unseen_ray_entropy *= mask
+
+            ray_entropy = torch.cat([ray_entropy, unseen_ray_entropy], dim=0)
+
+        if self.entropy_log_scaling:
+            entropy_loss = torch.log(ray_entropy.mean() + 1e-10)
+        else:
+            entropy_loss = ray_entropy.mean()
+        return entropy_loss
+
+    def entropy(self, prob):
+        return -1*prob*torch.log2(prob+1e-10)
+        return prob*torch.log2(1-prob)
+
+    def get_patch_rgb_ncc_loss(self, model_outputs, rgb_gt, img_res, patch_size):
+        rgb_gt = rgb_gt.permute(0, 2, 1).reshape(-1, 3, img_res[0], img_res[1])
+        patch_grid = model_outputs['unseen_patch_grid_uv']
+        sampled_rgb_values = torch.nn.functional.grid_sample(rgb_gt, patch_grid, align_corners=True).squeeze(-1).permute(0, 2, 1).squeeze(0)
+
+        unseen_rgb = model_outputs['unseen_patch_rgb_values'].reshape(-1, patch_size, patch_size, 3)
+        sampled_rgb_values = sampled_rgb_values.reshape(-1, patch_size, patch_size, 3)
+
+        ncc_loss = 1 - self.normalized_cross_corrleation(self.rgb_to_gray(sampled_rgb_values), self.rgb_to_gray(unseen_rgb))
+        ncc_loss = ncc_loss.mean()
+        return ncc_loss
+
+    def rgb_to_gray(self, img):
+        # img: [N, H, W, 3]
+        rgb_img = img.permute(0, 3, 1, 2)
+        rgb2gray = torchvision.transforms.Grayscale()
+        gray_img = rgb2gray(rgb_img)
+        return gray_img
+
+    def normalized_cross_corrleation(self, patch1, patch2):
+        N_patch, img_res = patch1.shape[0], patch1.shape[1:]
+        patch1 = patch1.view(N_patch, -1)
+        patch2 = patch2.view(N_patch, -1)
+        
+        product = torch.mean((patch1 - torch.mean(patch1, dim=-1, keepdim=True)) * (patch2 - torch.mean(patch2, dim=-1, keepdim=True)), dim=-1)
+        std = torch.std(patch1, dim=-1) * torch.std(patch2, dim=-1)
+        std = torch.clamp(std, 1e-8)
+        ncc = product / std
+
+        return ncc
+        
     
     def get_depth_loss(self, depth_pred, depth_gt, mask):
         # TODO remove hard-coded scaling for depth
@@ -196,8 +382,9 @@ class MonoSDFLoss(nn.Module):
         cos = (1. - torch.sum(normal_pred * normal_gt, dim = -1)).mean()
         return l1, cos
         
-    def forward(self, model_outputs, ground_truth):
+    def forward(self, model_outputs, ground_truth, patch_size, img_res):
         rgb_gt = ground_truth['rgb'].cuda()
+        full_rgb_gt = ground_truth['full_rgb'].cuda()
         # monocular depth and normal
         depth_gt = ground_truth['depth'].cuda()
         normal_gt = ground_truth['normal'].cuda()
@@ -222,29 +409,90 @@ class MonoSDFLoss(nn.Module):
             depth_loss = torch.tensor(0.0).cuda().float()    
         
         normal_l1, normal_cos = self.get_normal_loss(normal_pred * mask, normal_gt)
-        
-        smooth_loss = self.get_smooth_loss(model_outputs)
+
+        # neighbour normal smooth loss
+        normal_smooth_loss = self.get_normal_smooth_loss(model_outputs)
+
+        # patch depth / normal smooth loss (seen / unseen pose)
+        patch_depth_smooth_loss = torch.tensor(0.0).cuda().float()
+        patch_normal_smooth_loss = torch.tensor(0.0).cuda().float()
+        if model_outputs['patch_depth_values'] is not None:
+            patch_depth_smooth_loss = self.get_patch_depth_smooth_loss(model_outputs, patch_size)
+        if model_outputs['patch_normal_map'] is not None:
+            patch_normal_smooth_loss = self.get_patch_normal_smooth_loss(model_outputs, patch_size)
+
+        # patch rgb normalized cross correlation loss (seen to unseen pose)
+        if model_outputs['unseen_patch_grid_uv'] is not None:
+            patch_rgb_ncc_loss = self.get_patch_rgb_ncc_loss(model_outputs, full_rgb_gt, img_res, patch_size)
+
+        # ray entropy loss (seen / unseen pose)
+        entropy_loss = self.get_entropy_loss(model_outputs)
         
         # compute decay weights 
         if self.end_step > 0:
             decay = math.exp(-self.step / self.end_step * 10.)
         else:
             decay = 1.0
+
+        if self.step < self.start_reg_step:
+            patch_depth_smooth_loss = torch.tensor(0.0).cuda().float()
+            patch_normal_smooth_loss = torch.tensor(0.0).cuda().float()
+            entropy_loss = torch.tensor(0.0).cuda().float()
+            patch_rgb_ncc_loss = torch.tensor(0.0).cuda().float()
+            entropy_weight = 0
+            patch_normal_smooth_weight = 0
+            patch_depth_smooth_weight = 0
+            patch_rgb_ncc_weight = 0
+        else:
+            entropy_weight = self.entropy_weight
+            patch_normal_smooth_weight = self.patch_normal_smooth_weight
+            patch_depth_smooth_weight = self.patch_depth_smooth_weight
+            patch_rgb_ncc_weight = self.patch_rgb_ncc_weight
+
+
+        # detach loss which set weight as zero
+        if self.eikonal_weight == 0:
+            eikonal_loss = eikonal_loss.detach()
+        if self.normal_smooth_weight == 0:
+            normal_smooth_loss = normal_smooth_loss.detach()
+        if patch_depth_smooth_weight == 0:
+            patch_depth_smooth_loss = patch_depth_smooth_loss.detach()
+        if patch_normal_smooth_weight == 0:
+            patch_normal_smooth_loss = patch_normal_smooth_loss.detach()
+        if entropy_weight == 0:
+            entropy_loss = entropy_loss.detach()
+        if patch_rgb_ncc_weight == 0:
+            patch_rgb_ncc_loss = patch_rgb_ncc_loss.detach()
+        if self.depth_weight == 0:
+            depth_loss = depth_loss.detach()
+        if self.normal_l1_weight == 0:
+            normal_l1 = normal_l1.detach()
+        if self.normal_cos_weight == 0:
+            normal_cos = normal_cos.detach()
+        
             
         self.step += 1
 
         loss = rgb_loss + \
                self.eikonal_weight * eikonal_loss +\
-               self.smooth_weight * smooth_loss +\
+               self.normal_smooth_weight * normal_smooth_loss +\
+               patch_depth_smooth_weight * patch_depth_smooth_loss +\
+               patch_normal_smooth_weight * patch_normal_smooth_loss +\
+               entropy_weight * entropy_loss +\
+               patch_rgb_ncc_weight * patch_rgb_ncc_loss +\
                decay * self.depth_weight * depth_loss +\
                decay * self.normal_l1_weight * normal_l1 +\
-               decay * self.normal_cos_weight * normal_cos               
+               decay * self.normal_cos_weight * normal_cos
         
         output = {
             'loss': loss,
             'rgb_loss': rgb_loss,
             'eikonal_loss': eikonal_loss,
-            'smooth_loss': smooth_loss,
+            'normal_smooth_loss': normal_smooth_loss,
+            'patch_depth_smooth_loss': patch_depth_smooth_loss,
+            'patch_normal_smooth_loss': patch_normal_smooth_loss,
+            'entropy_loss': entropy_loss,
+            'patch_rgb_ncc_loss': patch_rgb_ncc_loss,
             'depth_loss': depth_loss,
             'normal_l1': normal_l1,
             'normal_cos': normal_cos

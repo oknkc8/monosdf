@@ -1,4 +1,6 @@
 import os
+import pdb
+from requests import patch
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -134,7 +136,10 @@ class SceneDatasetDN(torch.utils.data.Dataset):
                  scan_id=0,
                  center_crop_type='xxxx',
                  use_mask=False,
-                 num_views=-1
+                 num_views=-1,
+                 near_pose_type='rot_from_origin',
+                 near_pose_rot=5, # degree
+                 near_pose_trans=0.1
                  ):
 
         self.instance_dir = os.path.join('../data', data_dir, 'scan{0}'.format(scan_id))
@@ -147,6 +152,11 @@ class SceneDatasetDN(torch.utils.data.Dataset):
         assert os.path.exists(self.instance_dir), "Data directory is empty"
 
         self.sampling_idx = None
+        self.sampling_patch_idx = None
+        
+        self.unseen_sampling_idx = None
+        self.unseen_sampling_patch_idx = None
+        self.get_near_pose = utils.GetNearPose(near_pose_type, near_pose_rot, near_pose_trans)
         
         def glob_data(data_dir):
             data_paths = []
@@ -243,7 +253,8 @@ class SceneDatasetDN(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         if self.num_views >= 0:
             image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
-            idx = image_ids[random.randint(0, self.num_views - 1)]
+            # idx = image_ids[random.randint(0, self.num_views - 1)]
+            idx = image_ids[idx % self.num_views]
         
         uv = np.mgrid[0:self.img_res[0], 0:self.img_res[1]].astype(np.int32)
         uv = torch.from_numpy(np.flip(uv, axis=0).copy()).float()
@@ -252,7 +263,8 @@ class SceneDatasetDN(torch.utils.data.Dataset):
         sample = {
             "uv": uv,
             "intrinsics": self.intrinsics_all[idx],
-            "pose": self.pose_all[idx]
+            "pose": self.pose_all[idx],
+            "patch_uv": uv
         }
         
         ground_truth = {
@@ -272,6 +284,19 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             ground_truth["full_mask"] = self.mask_images[idx]
          
             sample["uv"] = uv[self.sampling_idx, :]
+            
+        if self.sampling_patch_idx is not None:
+            sample["patch_uv"] = uv[self.sampling_patch_idx, :]
+
+        sample["unseen_pose"] = torch.eye(4, dtype=torch.float32)    
+        sample["unseen_pose"][:3, :4] = self.get_near_pose(sample["pose"])
+        if self.unseen_sampling_idx is not None:
+            sample["unseen_uv"] = uv[self.unseen_sampling_idx, :]
+            
+        if self.unseen_sampling_patch_idx is not None:
+            sample["unseen_patch_uv"] = uv[self.unseen_sampling_patch_idx, :]
+
+        # sample["relative_pose"] = torch.linalg.inv(sample["unseen_pose"]) @ sample["pose"]
 
         return idx, sample, ground_truth
 
@@ -297,6 +322,44 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             self.sampling_idx = None
         else:
             self.sampling_idx = torch.randperm(self.total_pixels)[:sampling_size]
+            
+    def change_unseen_sampling_idx(self, sampling_size):
+        if sampling_size == -1:
+            self.unseen_sampling_idx = None
+        else:
+            self.unseen_sampling_idx = torch.randperm(self.total_pixels)[:sampling_size]
 
     def get_scale_mat(self):
         return np.load(self.cam_file)['scale_mat_0']
+    
+
+    # borrowed from RegNeRF
+    def change_sampling_patch_idx(self, sampling_size, patch_size=8):
+        if sampling_size == -1:
+            self.sampling_patch_idx = None
+        else:
+            n_patches = sampling_size // (patch_size ** 2)
+            
+            # Sample start locations
+            x0 = np.random.randint(0, self.img_res[1] - patch_size + 1, size=(n_patches, 1, 1))
+            y0 = np.random.randint(0, self.img_res[0] - patch_size + 1, size=(n_patches, 1, 1))
+            xy0 = np.concatenate([x0, y0], axis=-1)
+            patch_xy = xy0 + np.stack(np.meshgrid(np.arange(patch_size), np.arange(patch_size), indexing='xy'), axis=-1).reshape(1, -1, 2)
+            
+            patch_idx = patch_xy[..., 1] * self.img_res[1] + patch_xy[..., 0]
+            self.sampling_patch_idx = torch.tensor(patch_idx, dtype=torch.int64).reshape(-1)
+            
+    def change_unseen_sampling_patch_idx(self, sampling_size, patch_size=8):
+        if sampling_size == -1:
+            self.unseen_sampling_patch_idx = None
+        else:
+            n_patches = sampling_size // (patch_size ** 2)
+            
+            # Sample start locations
+            x0 = np.random.randint(0, self.img_res[1] - patch_size + 1, size=(n_patches, 1, 1))
+            y0 = np.random.randint(0, self.img_res[0] - patch_size + 1, size=(n_patches, 1, 1))
+            xy0 = np.concatenate([x0, y0], axis=-1)
+            patch_xy = xy0 + np.stack(np.meshgrid(np.arange(patch_size), np.arange(patch_size), indexing='xy'), axis=-1).reshape(1, -1, 2)
+            
+            patch_idx = patch_xy[..., 1] * self.img_res[1] + patch_xy[..., 0]
+            self.unseen_sampling_patch_idx = torch.tensor(patch_idx, dtype=torch.int64).reshape(-1)

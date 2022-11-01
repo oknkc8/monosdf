@@ -1,3 +1,4 @@
+import pdb
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -417,13 +418,105 @@ class MonoSDFNetwork(nn.Module):
         sampling_method = conf.get_string('sampling_method', default="errorbounded")
         self.ray_sampler = ErrorBoundSampler(self.scene_bounding_sphere, **conf.get_config('ray_sampler'))
         
+        self.use_patch_reg = conf.get_bool('use_patch_reg', default=False)
+        self.use_unseen_pose = conf.get_bool('use_unseen_pose', default=False)        
 
-    def forward(self, input, indices):
+    def forward_raw(self, uv, pose, intrinsics, indices, eikonal=True, output_rgb=True):
+        ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
+        
+        # we should use unnormalized ray direction for depth
+        ray_dirs_tmp, _ = rend_util.get_camera_params(uv, torch.eye(4).to(pose.device)[None], intrinsics)
+        depth_scale = ray_dirs_tmp[0, :, 2:]
+        
+        batch_size, num_pixels, _ = ray_dirs.shape
+
+        cam_loc = cam_loc.unsqueeze(1).repeat(1, num_pixels, 1).reshape(-1, 3)
+        ray_dirs = ray_dirs.reshape(-1, 3)
+
+        
+        z_vals, z_samples_eik = self.ray_sampler.get_z_vals(ray_dirs, cam_loc, self)
+        N_samples = z_vals.shape[1]
+
+        points = cam_loc.unsqueeze(1) + z_vals.unsqueeze(2) * ray_dirs.unsqueeze(1)
+        points_flat = points.reshape(-1, 3)
+
+
+        dirs = ray_dirs.unsqueeze(1).repeat(1,N_samples,1)
+        dirs_flat = dirs.reshape(-1, 3)
+
+        sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat)
+        
+        weights, alpha, dists, density = self.volume_rendering(z_vals, sdf)
+
+        rgb = None
+        rgb_values = None
+        if output_rgb:
+            rgb_flat = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors, indices)
+            rgb = rgb_flat.reshape(-1, N_samples, 3)
+            rgb_values = torch.sum(weights.unsqueeze(-1) * rgb, 1)
+        
+        depth_values = torch.sum(weights * z_vals, 1, keepdims=True) / (weights.sum(dim=1, keepdims=True) +1e-8)
+        # we should scale rendered distance to depth along z direction
+        depth_values = depth_scale * depth_values
+        
+        acc_map = torch.sum(weights, -1)
+        # white background assumption
+        if self.white_bkgd and output_rgb:
+            rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
+            
+        # compute normal map
+        normals = gradients / (gradients.norm(2, -1, keepdim=True) + 1e-6)
+        normals = normals.reshape(-1, N_samples, 3)
+        normal_map = torch.sum(weights.unsqueeze(-1) * normals, 1)
+        
+        # transform to local coordinate system
+        rot = pose[0, :3, :3].permute(1, 0).contiguous()
+        normal_map = rot @ normal_map.permute(1, 0)
+        normal_map = normal_map.permute(1, 0).contiguous()
+        
+        output = {
+            'rgb':rgb,
+            'rgb_values': rgb_values,
+            'depth_values': depth_values,
+            'z_vals': z_vals,
+            'depth_vals': z_vals * depth_scale,
+            'sdf': sdf.reshape(z_vals.shape),
+            'weights': weights,
+            'sigma': density,
+            'acc': acc_map,
+            'alpha': alpha,
+            'dists': dists,
+            'normal_map': normal_map,
+        }
+        
+        if self.training and eikonal:
+            # Sample points for the eikonal loss
+            n_eik_points = batch_size * num_pixels
+            
+            eikonal_points = torch.empty(n_eik_points, 3).uniform_(-self.scene_bounding_sphere, self.scene_bounding_sphere).cuda()
+
+            # add some of the near surface points
+            eik_near_points = (cam_loc.unsqueeze(1) + z_samples_eik.unsqueeze(2) * ray_dirs.unsqueeze(1)).reshape(-1, 3)
+            eikonal_points = torch.cat([eikonal_points, eik_near_points], 0)
+            # add some neighbour points as unisurf
+            neighbour_points = eikonal_points + (torch.rand_like(eikonal_points) - 0.5) * 0.01   
+            eikonal_points = torch.cat([eikonal_points, neighbour_points], 0)
+                   
+            grad_theta = self.implicit_network.gradient(eikonal_points)
+            
+            # split gradient to eikonal points and neighbour ponits
+            output['grad_theta'] = grad_theta[:grad_theta.shape[0]//2]
+            output['grad_theta_nei'] = grad_theta[grad_theta.shape[0]//2:]
+        
+        return output
+
+    def forward(self, input, indices, img_res=None):
         # Parse model input
         intrinsics = input["intrinsics"]
         uv = input["uv"]
         pose = input["pose"]
-
+        
+        """
         ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
         
         # we should use unnormalized ray direction for depth
@@ -473,7 +566,11 @@ class MonoSDFNetwork(nn.Module):
             'sdf': sdf.reshape(z_vals.shape),
             'weights': weights,
         }
+        """
+        
+        output = self.forward_raw(input["uv"], input["pose"], input["intrinsics"], indices)
 
+        """
         if self.training:
             # Sample points for the eikonal loss
             n_eik_points = batch_size * num_pixels
@@ -489,10 +586,12 @@ class MonoSDFNetwork(nn.Module):
                    
             grad_theta = self.implicit_network.gradient(eikonal_points)
             
-            # split gradient to eikonal points and heighbour ponits
+            # split gradient to eikonal points and neighbour ponits
             output['grad_theta'] = grad_theta[:grad_theta.shape[0]//2]
             output['grad_theta_nei'] = grad_theta[grad_theta.shape[0]//2:]
+        """
         
+        """
         # compute normal map
         normals = gradients / (gradients.norm(2, -1, keepdim=True) + 1e-6)
         normals = normals.reshape(-1, N_samples, 3)
@@ -504,6 +603,88 @@ class MonoSDFNetwork(nn.Module):
         normal_map = normal_map.permute(1, 0).contiguous()
         
         output['normal_map'] = normal_map
+        """
+        
+        ################################
+        #  forward for patched pixels
+        ################################
+        output['patch_depth_values'] = None
+        output['patch_normal_map'] = None
+        if self.training and self.use_patch_reg:
+            output_patch = self.forward_raw(input["patch_uv"], input["pose"], input["intrinsics"], indices, eikonal=False, output_rgb=False)
+            output['patch_depth_values'] = output_patch['depth_values']
+            output['patch_normal_map'] = output_patch['normal_map']
+            output['patch_acc'] = output_patch['acc']
+            del output_patch
+        
+        
+        ################################
+        #  forward for unseen pose
+        ################################
+        output['unseen_depth_values'] = None
+        output['unseen_normal_map'] = None
+        output['unseen_patch_depth_values'] = None
+        output['unseen_patch_normal_map'] = None
+        output['unseen_sdf'] = None
+        output['unseen_sigma'] = None
+        output['unseen_acc'] = None
+        output['unseen_weights'] = None
+        output['unseen_alpha'] = None
+        output['unseen_dists'] = None
+        output['unseen_grad_theta'] = None
+        output['unseen_grad_theta_nei'] = None
+        output['unseen_patch_grid_uv'] = None
+        if self.training and self.use_unseen_pose:
+            # for entropy loss
+            output_unseen = self.forward_raw(input["unseen_uv"], input["unseen_pose"], input["intrinsics"], indices, eikonal=True, output_rgb=False)
+            output['unseen_depth_values'] = output_unseen['depth_values']
+            output['unseen_normal_map'] = output_unseen['normal_map']
+            output['unseen_sdf'] = output_unseen['sdf']
+            output['unseen_sigma'] = output_unseen['sigma']
+            output['unseen_acc'] = output_unseen['acc']
+            output['unseen_weights'] = output_unseen['weights']
+            output['unseen_alpha'] = output_unseen['alpha']
+            output['unseen_dists'] = output_unseen['dists']
+            output['unseen_grad_theta'] = output_unseen['grad_theta']
+            output['unseen_grad_theta_nei'] = output_unseen['grad_theta_nei']
+            
+            if self.use_patch_reg:
+                output_patch_unseen = self.forward_raw(input["unseen_patch_uv"], input["unseen_pose"], input["intrinsics"], indices, eikonal=False, output_rgb=True)
+                output['unseen_patch_depth_values'] = output_patch_unseen['depth_values']
+                output['unseen_patch_normal_map'] = output_patch_unseen['normal_map']
+                output['unseen_patch_acc'] = output_patch_unseen['acc']
+                output['unseen_patch_rgb_values'] = output_patch_unseen['rgb_values']
+
+                # sample["relative_pose"] = torch.linalg.inv(sample["unseen_pose"]) @ sample["pose"]
+                
+                
+                with torch.no_grad():
+                    R_unseen = input["unseen_pose"][:, :3, :3]
+                    t_unseen = input["unseen_pose"][:, :3, 3:]
+                    # seen_to_unseen_pose = torch.linalg.inv(input["pose"]) @ input["unseen_pose"]
+                    rel_pose = torch.linalg.inv(input["pose"]) @ input["unseen_pose"]
+                    R_rel = rel_pose[:, :3, :3]
+                    t_rel = rel_pose[:, :3, 3:]
+                    intr = input["intrinsics"][:, :3, :3]
+                    inv_intr = torch.linalg.inv(intr)
+
+                    normals = torch.nn.functional.normalize(output['unseen_patch_normal_map'], p=2, dim=-1)
+                    rot_normals = R_unseen @ normals.unsqueeze(-1)
+                    sign = torch.sign(output['unseen_patch_depth_values'].unsqueeze(-1))
+                    sign[sign == 0] = 1
+                    d = torch.clamp(torch.abs(output['unseen_patch_depth_values'].unsqueeze(-1)), 1e-8) * sign
+
+                    H = intr @ \
+                        (R_rel + t_rel @ rot_normals.view(-1, 1, 3) / d) @ \
+                        inv_intr
+
+                    grid = self.patch_homography(H, input["unseen_patch_uv"])
+                    H, W = img_res
+                    grid[..., 0] = 2 * grid[..., 0] / (W - 1) - 1
+                    grid[..., 1] = 2 * grid[..., 1] / (H - 1) - 1
+                    grid = grid.reshape(1, -1, 1, 2)
+
+                output['unseen_patch_grid_uv'] = grid
 
         return output
 
@@ -521,4 +702,12 @@ class MonoSDFNetwork(nn.Module):
         transmittance = torch.exp(-torch.cumsum(shifted_free_energy, dim=-1))  # probability of everything is empty up to now
         weights = alpha * transmittance # probability of the ray hits something here
 
-        return weights
+        return weights, alpha, dists, density
+
+    def patch_homography(self, H, uv):
+        N = uv.shape[1]
+        uv = torch.cat([uv, torch.ones(uv.shape[:-1], device=uv.device).unsqueeze(-1)], dim=-1).view(N, 3, 1)
+        grid = H @ uv
+        grid = grid.reshape(N, 1, 3)
+        grid = grid[..., :2] / torch.clamp(grid[..., 2:], 1e-8)
+        return grid

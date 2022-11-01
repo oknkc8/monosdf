@@ -155,4 +155,4 @@ if __name__ == '__main__':
     pbar.set_description('done')
     pbar.close()
     over_all = (mean_d2s + mean_s2d) / 2
-    print(mean_d2s, mean_s2d, over_all)
+    print('Acc:', mean_d2s, 'Comp:', mean_s2d, 'Chamfer:', over_all)

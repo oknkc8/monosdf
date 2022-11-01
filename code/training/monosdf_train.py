@@ -16,6 +16,7 @@ from model.loss import compute_scale_and_shift
 from utils.general import BackprojectDepth
 
 import torch.distributed as dist
+import pdb
 
 class MonoSDFTrainRunner():
     def __init__(self,**kwargs):
@@ -29,6 +30,7 @@ class MonoSDFTrainRunner():
         self.GPU_INDEX = kwargs['gpu_index']
 
         self.expname = self.conf.get_string('train.expname') + kwargs['expname']
+        self.expcommnet = self.conf.get_string('train.expcomment')
         scan_id = kwargs['scan_id'] if kwargs['scan_id'] != -1 else self.conf.get_int('dataset.scan_id', default=-1)
         if scan_id != -1:
             self.expname = self.expname + '_{0}'.format(scan_id)
@@ -54,10 +56,16 @@ class MonoSDFTrainRunner():
             self.expdir = os.path.join('../', self.exps_folder_name, self.expname)
             utils.mkdir_ifnotexists(self.expdir)
             self.timestamp = '{:%Y_%m_%d_%H_%M_%S}'.format(datetime.now())
+            self.timestamp = self.timestamp + '_' + self.expcommnet
             utils.mkdir_ifnotexists(os.path.join(self.expdir, self.timestamp))
 
             self.plots_dir = os.path.join(self.expdir, self.timestamp, 'plots')
             utils.mkdir_ifnotexists(self.plots_dir)
+            utils.mkdir_ifnotexists(os.path.join(self.plots_dir, 'depth'))
+            utils.mkdir_ifnotexists(os.path.join(self.plots_dir, 'normal'))
+            utils.mkdir_ifnotexists(os.path.join(self.plots_dir, 'rendering'))
+            utils.mkdir_ifnotexists(os.path.join(self.plots_dir, 'merge'))
+            utils.mkdir_ifnotexists(os.path.join(self.plots_dir, 'surface'))
 
             # create checkpoints dirs
             self.checkpoints_path = os.path.join(self.expdir, self.timestamp, 'checkpoints')
@@ -96,7 +104,7 @@ class MonoSDFTrainRunner():
                                                             batch_size=self.batch_size,
                                                             shuffle=True,
                                                             collate_fn=self.train_dataset.collate_fn,
-                                                            num_workers=8)
+                                                            num_workers=0)
         self.plot_dataloader = torch.utils.data.DataLoader(self.train_dataset,
                                                            batch_size=self.conf.get_int('plot.plot_nimgs'),
                                                            shuffle=True,
@@ -156,6 +164,7 @@ class MonoSDFTrainRunner():
 
         self.num_pixels = self.conf.get_int('train.num_pixels')
         self.total_pixels = self.train_dataset.total_pixels
+        self.patch_size = self.conf.get_int('train.patch_size')
         self.img_res = self.train_dataset.img_res
         self.n_batches = len(self.train_dataloader)
         self.plot_freq = self.conf.get_int('train.plot_freq')
@@ -201,8 +210,7 @@ class MonoSDFTrainRunner():
                 self.model.eval()
 
                 self.train_dataset.change_sampling_idx(-1)
-                
-                #for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
+                self.train_dataset.change_sampling_patch_idx(-1)
 
                 indices, model_input, ground_truth = next(iter(self.plot_dataloader))
                 model_input["intrinsics"] = model_input["intrinsics"].cuda()
@@ -235,17 +243,25 @@ class MonoSDFTrainRunner():
 
                 self.model.train()
             self.train_dataset.change_sampling_idx(self.num_pixels)
+            self.train_dataset.change_sampling_patch_idx(self.num_pixels, self.patch_size)
+            self.train_dataset.change_unseen_sampling_idx(self.num_pixels)
+            self.train_dataset.change_unseen_sampling_patch_idx(self.num_pixels, self.patch_size)
 
             for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
                 model_input["intrinsics"] = model_input["intrinsics"].cuda()
                 model_input["uv"] = model_input["uv"].cuda()
                 model_input['pose'] = model_input['pose'].cuda()
+                model_input["patch_uv"] = model_input["patch_uv"].cuda()
+                model_input["unseen_uv"] = model_input["unseen_uv"].cuda()
+                model_input["unseen_pose"] = model_input["unseen_pose"].cuda()
+                model_input["unseen_patch_uv"] = model_input["unseen_patch_uv"].cuda()
+                # model_input["relative_pose"] = model_input["relative_pose"].cuda()
                 
                 self.optimizer.zero_grad()
                 
-                model_outputs = self.model(model_input, indices)
+                model_outputs = self.model(model_input, indices, self.img_res)
                 
-                loss_output = self.loss(model_outputs, ground_truth)
+                loss_output = self.loss(model_outputs, ground_truth, self.patch_size, self.img_res)
                 loss = loss_output['loss']
                 loss.backward()
                 self.optimizer.step()
@@ -268,7 +284,11 @@ class MonoSDFTrainRunner():
                     self.writer.add_scalar('Loss/loss', loss.item(), self.iter_step)
                     self.writer.add_scalar('Loss/color_loss', loss_output['rgb_loss'].item(), self.iter_step)
                     self.writer.add_scalar('Loss/eikonal_loss', loss_output['eikonal_loss'].item(), self.iter_step)
-                    self.writer.add_scalar('Loss/smooth_loss', loss_output['smooth_loss'].item(), self.iter_step)
+                    self.writer.add_scalar('Loss/normal_smooth_loss', loss_output['normal_smooth_loss'].item(), self.iter_step)
+                    self.writer.add_scalar('Loss/patch_depth_smooth_loss', loss_output['patch_depth_smooth_loss'].item(), self.iter_step)
+                    self.writer.add_scalar('Loss/patch_normal_smooth_loss', loss_output['patch_normal_smooth_loss'].item(), self.iter_step)
+                    self.writer.add_scalar('Loss/entropy_loss', loss_output['entropy_loss'].item(), self.iter_step)
+                    self.writer.add_scalar('Loss/patch_rgb_ncc_loss', loss_output['patch_rgb_ncc_loss'].item(), self.iter_step)
                     self.writer.add_scalar('Loss/depth_loss', loss_output['depth_loss'].item(), self.iter_step)
                     self.writer.add_scalar('Loss/normal_l1_loss', loss_output['normal_l1'].item(), self.iter_step)
                     self.writer.add_scalar('Loss/normal_cos_loss', loss_output['normal_cos'].item(), self.iter_step)
@@ -283,6 +303,9 @@ class MonoSDFTrainRunner():
                         self.writer.add_scalar('Statistics/lr2', self.optimizer.param_groups[2]['lr'], self.iter_step)
                 
                 self.train_dataset.change_sampling_idx(self.num_pixels)
+                self.train_dataset.change_sampling_patch_idx(self.num_pixels, self.patch_size)
+                self.train_dataset.change_unseen_sampling_idx(self.num_pixels)
+                self.train_dataset.change_unseen_sampling_patch_idx(self.num_pixels, self.patch_size)
                 self.scheduler.step()
 
         self.save_checkpoints(epoch)
@@ -298,7 +321,7 @@ class MonoSDFTrainRunner():
         depth_map = model_outputs['depth_values'].reshape(batch_size, num_samples)
         depth_gt = depth_gt.to(depth_map.device)
         scale, shift = compute_scale_and_shift(depth_map[..., None], depth_gt, depth_gt > 0.)
-        depth_map = depth_map * scale + shift
+        # depth_map = depth_map * scale + shift
         
         # save point cloud
         depth = depth_map.reshape(1, 1, self.img_res[0], self.img_res[1])

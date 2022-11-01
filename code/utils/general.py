@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import time
 from torchvision import transforms
 import numpy as np
+import pdb
 
 def mkdir_ifnotexists(directory):
     if not os.path.exists(directory):
@@ -96,3 +97,72 @@ class BackprojectDepth(nn.Module):
         cam_points = depth.view(self.batch_size, 1, -1) * cam_points
         cam_points = torch.cat([cam_points, self.ones], 1)
         return cam_points
+
+# borrowed from InfoNeRF
+class GetNearPose:
+    def __init__(self,
+                 near_pose_type='rot_from_origin',
+                 near_pose_rot=5,
+                 near_pose_trans=0.1):
+        super(GetNearPose, self).__init__()
+        self.near_pose_type = near_pose_type
+        self.near_pose_rot = near_pose_rot
+        self.near_pose_trans = near_pose_trans
+    
+    def __call__(self, c2w):
+        c2w = c2w[:3, :4]
+        assert (c2w.shape == (3,4))
+        
+        if self.near_pose_type == 'rot_from_origin':
+            return self.rot_from_origin(c2w)
+        elif self.near_pose_type == 'random_pos':
+            return self.random_pos(c2w)
+        elif self.near_pose_type == 'random_dir':
+            return self.random_dir(c2w)
+   
+    def random_pos(self, c2w):     
+        c2w[:, -1:] += self.near_pose_trans*torch.randn(3).unsqueeze(-1)
+        return c2w 
+    
+    def random_dir(self, c2w):
+        rot = c2w[:3,:3]
+        pos = c2w[:3,-1:]
+        rot_mat = self.get_rotation_matrix()
+        rot = torch.mm(rot_mat, rot)
+        c2w = torch.cat((rot, pos), -1)
+        return c2w
+    
+    def rot_from_origin(self, c2w):
+        rot = c2w[:3,:3]
+        pos = c2w[:3,-1:]
+        rot_mat = self.get_rotation_matrix()
+        pos = torch.mm(rot_mat, pos)
+        rot = torch.mm(rot_mat, rot)
+        c2w = torch.cat((rot, pos), -1)
+        return c2w
+
+    def get_rotation_matrix(self):
+        rotation = self.near_pose_rot
+
+        phi = (rotation*(np.pi / 180.))
+        x = np.random.uniform(-phi, phi)
+        y = np.random.uniform(-phi, phi)
+        z = np.random.uniform(-phi, phi)
+        
+        rot_x = torch.Tensor([
+                    [1,0,0],
+                    [0,np.cos(x),-np.sin(x)],
+                    [0,np.sin(x), np.cos(x)]
+                    ])
+        rot_y = torch.Tensor([
+                    [np.cos(y),0,-np.sin(y)],
+                    [0,1,0],
+                    [np.sin(y),0, np.cos(y)]
+                    ])
+        rot_z = torch.Tensor([
+                    [np.cos(z),-np.sin(z),0],
+                    [np.sin(z),np.cos(z),0],
+                    [0,0,1],
+                    ])
+        rot_mat = torch.mm(rot_x, torch.mm(rot_y, rot_z))
+        return rot_mat
