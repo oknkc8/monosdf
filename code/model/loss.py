@@ -342,14 +342,20 @@ class MonoSDFLoss(nn.Module):
     def get_patch_rgb_ncc_loss(self, model_outputs, rgb_gt, img_res, patch_size):
         rgb_gt = rgb_gt.permute(0, 2, 1).reshape(-1, 3, img_res[0], img_res[1])
         patch_grid = model_outputs['unseen_patch_grid_uv']
+        patch_mask = model_outputs['unseen_patch_grid_mask']
         sampled_rgb_values = torch.nn.functional.grid_sample(rgb_gt, patch_grid, align_corners=True).squeeze(-1).permute(0, 2, 1).squeeze(0)
 
         unseen_rgb = model_outputs['unseen_patch_rgb_values'].reshape(-1, patch_size, patch_size, 3)
         sampled_rgb_values = sampled_rgb_values.reshape(-1, patch_size, patch_size, 3)
+        patch_mask = patch_mask.reshape(-1, patch_size, patch_size)
 
-        ncc_loss = 1 - self.normalized_cross_corrleation(self.rgb_to_gray(sampled_rgb_values), self.rgb_to_gray(unseen_rgb))
-        ncc_loss = ncc_loss.mean()
-        return ncc_loss
+        # ncc_loss = 1 - self.normalized_cross_corrleation(self.rgb_to_gray(sampled_rgb_values), self.rgb_to_gray(unseen_rgb))
+        if patch_mask.sum() == 0:
+            ncc_loss = torch.tensor(0.0).cuda().float()
+        else:
+            ncc_loss = torch.abs(unseen_rgb - sampled_rgb_values)[patch_mask]
+            ncc_loss = ncc_loss.mean()
+        return ncc_loss, unseen_rgb.detach(), sampled_rgb_values.detach()
 
     def rgb_to_gray(self, img):
         # img: [N, H, W, 3]
@@ -423,7 +429,7 @@ class MonoSDFLoss(nn.Module):
 
         # patch rgb normalized cross correlation loss (seen to unseen pose)
         if model_outputs['unseen_patch_grid_uv'] is not None:
-            patch_rgb_ncc_loss = self.get_patch_rgb_ncc_loss(model_outputs, full_rgb_gt, img_res, patch_size)
+            patch_rgb_ncc_loss, unseen_rgb, sampled_rgb = self.get_patch_rgb_ncc_loss(model_outputs, full_rgb_gt, img_res, patch_size)
 
         # ray entropy loss (seen / unseen pose)
         entropy_loss = self.get_entropy_loss(model_outputs)
@@ -495,7 +501,9 @@ class MonoSDFLoss(nn.Module):
             'patch_rgb_ncc_loss': patch_rgb_ncc_loss,
             'depth_loss': depth_loss,
             'normal_l1': normal_l1,
-            'normal_cos': normal_cos
+            'normal_cos': normal_cos,
+            'unseen_rgb': unseen_rgb,
+            'sampled_rgb': sampled_rgb
         }
 
         return output

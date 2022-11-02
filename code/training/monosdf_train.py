@@ -16,6 +16,7 @@ from model.loss import compute_scale_and_shift
 from utils.general import BackprojectDepth
 
 import torch.distributed as dist
+import torchvision.utils as vutils
 import pdb
 
 class MonoSDFTrainRunner():
@@ -292,6 +293,12 @@ class MonoSDFTrainRunner():
                     self.writer.add_scalar('Loss/depth_loss', loss_output['depth_loss'].item(), self.iter_step)
                     self.writer.add_scalar('Loss/normal_l1_loss', loss_output['normal_l1'].item(), self.iter_step)
                     self.writer.add_scalar('Loss/normal_cos_loss', loss_output['normal_cos'].item(), self.iter_step)
+
+                    unseen_rgb = loss_output['unseen_rgb'][:4].permute(0,3,1,2)
+                    sampled_rgb = loss_output['sampled_rgb'][:4].permute(0,3,1,2)
+                    output_img = torch.cat([unseen_rgb, sampled_rgb], dim=0)
+                    output_img = vutils.make_grid(output_img, 4)
+                    self.writer.add_image('patch_rgb', output_img, self.iter_step)
                     
                     self.writer.add_scalar('Statistics/beta', self.model.module.density.get_beta().item(), self.iter_step)
                     self.writer.add_scalar('Statistics/alpha', 1. / self.model.module.density.get_beta().item(), self.iter_step)

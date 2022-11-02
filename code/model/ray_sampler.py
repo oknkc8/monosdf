@@ -66,7 +66,7 @@ class UniformSampler(RaySampler):
         return near, far
 
     # anneals near and far plane (borrowed from RegNeRF)
-    def anneal_near_far(self, iter, near_final, far_final, n_steps=2000, init_perc=0.2, mid_perc=0.5):
+    def anneal_nearfar(self, iter, near_final, far_final, n_steps=2000, init_perc=0.2, mid_perc=0.5):
         mid = near_final + mid_perc * (far_final - near_final)
 
         near_init = mid + init_perc * (near_final - mid)
@@ -88,7 +88,7 @@ class UniformSampler(RaySampler):
             near = self.near * torch.ones(ray_dirs.shape[0], 1).cuda()
 
         if self.anneal_near_far:
-            near, far = self.anneal_near_far(iter, near, far, self.anneal_n_steps, self.anneal_init_perc, self.anneal_mid_perc)
+            near, far = self.anneal_nearfar(iter, near, far, self.anneal_n_steps, self.anneal_init_perc, self.anneal_mid_perc)
         
         t_vals = torch.linspace(0., 1., steps=self.N_samples).cuda()
         z_vals = near * (1. - t_vals) + far * (t_vals)

@@ -678,13 +678,15 @@ class MonoSDFNetwork(nn.Module):
                         (R_rel + t_rel @ rot_normals.view(-1, 1, 3) / d) @ \
                         inv_intr
 
-                    grid = self.patch_homography(H, input["unseen_patch_uv"])
+                    grid, mask = self.patch_homography(H, input["unseen_patch_uv"])
                     H, W = img_res
                     grid[..., 0] = 2 * grid[..., 0] / (W - 1) - 1
                     grid[..., 1] = 2 * grid[..., 1] / (H - 1) - 1
                     grid = grid.reshape(1, -1, 1, 2)
+                    mask = mask & (torch.abs(grid[..., 0]) <= 1) & (torch.abs(grid[..., 1] <= 1))
 
                 output['unseen_patch_grid_uv'] = grid
+                output['unseen_patch_grid_mask'] = mask
 
         return output
 
@@ -707,7 +709,8 @@ class MonoSDFNetwork(nn.Module):
     def patch_homography(self, H, uv):
         N = uv.shape[1]
         uv = torch.cat([uv, torch.ones(uv.shape[:-1], device=uv.device).unsqueeze(-1)], dim=-1).view(N, 3, 1)
-        grid = H @ uv
-        grid = grid.reshape(N, 1, 3)
-        grid = grid[..., :2] / torch.clamp(grid[..., 2:], 1e-8)
-        return grid
+        tmp = H @ uv
+        tmp = tmp.reshape(N, 1, 3)
+        grid = tmp[..., :2] / torch.clamp(tmp[..., 2:], 1e-8)
+        mask = tmp[..., 2] > 0
+        return grid, mask
