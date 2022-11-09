@@ -400,7 +400,6 @@ class RenderingNetwork(nn.Module):
 class MonoSDFNetwork(nn.Module):
     def __init__(self, conf):
         super().__init__()
-        pdb.set_trace()
         self.feature_vector_size = conf.get_int('feature_vector_size')
         self.scene_bounding_sphere = conf.get_float('scene_bounding_sphere', default=1.0)
         self.white_bkgd = conf.get_bool('white_bkgd', default=False)

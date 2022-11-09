@@ -67,6 +67,4 @@ if __name__ == '__main__':
                                     scan_id=opt.scan_id,
                                     do_vis=not opt.cancel_vis
                                     )
-    import pdb
-    pdb.set_trace()
     trainrunner.run()

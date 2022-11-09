@@ -97,7 +97,6 @@ class MonoSDFTrainRunner():
 
         self.max_total_iters = self.conf.get_int('train.max_total_iters', default=200000)
         self.ds_len = len(self.train_dataset)
-        pdb.set_trace()
         print('Finish loading data. Data-set size: {0}'.format(self.ds_len))
         if scan_id < 24 and scan_id > 0: # BlendedMVS, running for 200k iterations
             self.nepochs = int(self.max_total_iters / self.ds_len)
