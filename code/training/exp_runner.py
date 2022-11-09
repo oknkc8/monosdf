@@ -12,7 +12,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1, help='input batch size')
-    parser.add_argument('--nepoch', type=int, default=2000, help='number of epochs to train for')
+    parser.add_argument('--nepoch', type=int, default=20000, help='number of epochs to train for')
     parser.add_argument('--conf', type=str, default='./confs/dtu.conf')
     parser.add_argument('--expname', type=str, default='')
     parser.add_argument("--exps_folder", type=str, default="exps")
@@ -67,5 +67,6 @@ if __name__ == '__main__':
                                     scan_id=opt.scan_id,
                                     do_vis=not opt.cancel_vis
                                     )
-
+    import pdb
+    pdb.set_trace()
     trainrunner.run()

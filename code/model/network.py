@@ -400,6 +400,7 @@ class RenderingNetwork(nn.Module):
 class MonoSDFNetwork(nn.Module):
     def __init__(self, conf):
         super().__init__()
+        pdb.set_trace()
         self.feature_vector_size = conf.get_int('feature_vector_size')
         self.scene_bounding_sphere = conf.get_float('scene_bounding_sphere', default=1.0)
         self.white_bkgd = conf.get_bool('white_bkgd', default=False)
@@ -419,9 +420,16 @@ class MonoSDFNetwork(nn.Module):
         self.ray_sampler = ErrorBoundSampler(self.scene_bounding_sphere, **conf.get_config('ray_sampler'))
         
         self.use_patch_reg = conf.get_bool('use_patch_reg', default=False)
-        self.use_unseen_pose = conf.get_bool('use_unseen_pose', default=False)        
+        self.use_unseen_pose = conf.get_bool('use_unseen_pose', default=False)  
+        self.use_warped_colors = conf.get_bool('use_warped_colors', default=False)
 
-    def forward_raw(self, uv, pose, intrinsics, indices, eikonal=True, output_rgb=True):
+        self.h_patch_size = conf.get_int('h_patch_size', default=False)
+        self.plane_dist_thresh = 1e-3
+        self.z_axis = torch.tensor([0, 0, 1]).float()
+        self.offsets = rend_util.build_patch_offset(self.h_patch_size)
+
+    def forward_raw(self, uv, pose, intrinsics, indices, eikonal=True, output_rgb=True, warping_params=None):
+        
         ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
         
         # we should use unnormalized ray direction for depth
@@ -445,8 +453,41 @@ class MonoSDFNetwork(nn.Module):
         dirs_flat = dirs.reshape(-1, 3)
 
         sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat)
+
+        weights, alpha, all_cumulated, dists, density = self.volume_rendering(z_vals, sdf)
+        acc_map = torch.sum(weights, -1)
         
-        weights, alpha, dists, density = self.volume_rendering(z_vals, sdf)
+        ##########################################
+        # ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
+        # batch_size, num_pixels, _ = ray_dirs.shape
+        # self.implicit_network.eval()
+
+        # # sample points along the camera ray (volSDF method)
+        # with torch.no_grad():
+        #     sampled_points = self.ray_tracer(implicit_network=self.implicit_network,
+        #                                      cam_loc=cam_loc,
+        #                                      ray_directions=ray_dirs)
+
+        #     z_vals = torch.norm(sampled_points - cam_loc, dim=-1)
+
+        # self.implicit_network.train()
+        # ray_dirs = ray_dirs.reshape(-1, 3)
+
+        # N, Ns, _ = sampled_points.shape
+
+        # flat_sampled_points = sampled_points.view(-1, 3)
+        # # output, g = self.implicit_network.gradient(flat_sampled_points)
+        # sdf, feature_vectors, gradients = self.implicit_network.get_outputs(flat_sampled_points)
+        # sdf = sdf.view(N, Ns)
+        # normals = gradients / (gradients.norm(2, -1, keepdim=True) + 1e-6)
+
+        # weights, alpha, all_cumulated, dists, density = self.volume_rendering(z_vals, sdf)
+        # acc_map = torch.sum(weights, -1)
+        
+        # intersection_points = torch.sum(weights.unsqueeze(-1) * sampled_points, dim=1)
+        # intersection_points += all_cumulated[:, None] * sampled_points[:, -1] # background point is the last point (i.e. intersection with world sphere)
+        # network_object_mask = (all_cumulated < 0.5)  # no intersection if background contribution is more than half
+
 
         rgb = None
         rgb_values = None
@@ -454,15 +495,112 @@ class MonoSDFNetwork(nn.Module):
             rgb_flat = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors, indices)
             rgb = rgb_flat.reshape(-1, N_samples, 3)
             rgb_values = torch.sum(weights.unsqueeze(-1) * rgb, 1)
+
+        # white background assumption
+        if self.white_bkgd and output_rgb:
+            rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
+
+        if warping_params is not None:
+            if warping_params['warp'] == 'patch':
+                with torch.no_grad():
+                    sampled_dists = torch.norm(points - cam_loc.unsqueeze(1), dim=-1).reshape(-1, 1)
+
+                    N_rays, N_sampled = points.shape[:2]
+                    N_pts = N_rays * N_sampled
+                    N_src = warping_params["src_intr"].shape[0]
+                    
+                    normals = gradients / (gradients.norm(2, -1, keepdim=True) + 1e-6)
+                    
+                    rot_normals = warping_params["R_ref"] @ normals.unsqueeze(-1)
+                    points_in_ref = warping_params["R_ref"] @ points_flat.unsqueeze(-1) + warping_params["t_ref"]
+                    d1 = torch.sum(rot_normals * points_in_ref, dim=1).unsqueeze(1)
+                    d2 = torch.sum(rot_normals.unsqueeze(1) 
+                                * (-warping_params["R_rel"].transpose(1,2) @ warping_params['t_rel']), dim=2)
+
+                    valid_hom = (torch.abs(d1) > self.plane_dist_thresh) & (
+                                torch.abs(d1 - d2) > self.plane_dist_thresh) & ((d2 / d1) < 1)
+
+                    valid_hom = valid_hom.view(N_rays, N_sampled, N_src)
+                    valid_hom_mask = torch.sum(weights.unsqueeze(1) * valid_hom.transpose(1, 2).float(), dim=2)
+                    valid_hom_mask += torch.ones_like(valid_hom_mask) * all_cumulated.unsqueeze(1)
+
+                    d1 = d1.squeeze()
+                    sign = torch.sign(d1)
+                    sign[sign == 0] = 1
+                    d = torch.clamp(torch.abs(d1), 1e-8) * sign
+
+                    H = warping_params["src_intr"].unsqueeze(1) @ (
+                            warping_params["R_rel"].unsqueeze(1) 
+                        + warping_params["t_rel"].unsqueeze(1) @ rot_normals.view(1, N_pts, 1, 3) 
+                        / d.view(1, N_pts, 1, 1)
+                    ) @ warping_params["inv_ref_intr"].view(1, 1, 3, 3)
+
+                    # replace invalid homs with fronto-parallel homographies
+                    H_invalid = warping_params["src_intr"].unsqueeze(1) @ (
+                            warping_params["R_rel"].unsqueeze(1) 
+                        + warping_params["t_rel"].unsqueeze(1) @ rot_normals.view(1, N_pts, 1, 3) 
+                        / sampled_dists.view(1, N_pts, 1, 1)
+                    ) @ warping_params["inv_ref_intr"].view(1, 1, 3, 3)
+
+                    tmp_m = ~valid_hom.view(-1, N_src).t()
+                    H[tmp_m] = H_invalid[tmp_m]
+
+                pixels = uv.view(N_rays, 1, 2) + self.offsets.float().to(uv.device)
+                N_pixels = pixels.shape[1]
+                grid, warp_mask_full = self.patch_homography(H, pixels)
+
+                h, w = warping_params['src_img'].shape[-2:]
+                warp_mask_full = warp_mask_full & (grid[..., 0] < (w - self.h_patch_size)) & (grid[..., 1] < (h - self.h_patch_size)) & (grid >= self.h_patch_size).all(dim=-1)
+                warp_mask_full = warp_mask_full.view(N_src, N_rays, N_sampled, N_pixels)
+                
+                grid = torch.clamp(rend_util.normalize(grid, h, w), -10, 10)
+
+                sampled_rgb_val = F.grid_sample(warping_params['src_img'].squeeze(0), grid.view(N_src, -1, 1, 2), align_corners=True).squeeze(-1).transpose(1, 2)
+                sampled_rgb_val = sampled_rgb_val.view(N_src, N_rays, N_sampled, N_pixels, 3)
+                sampled_rgb_val[~warp_mask_full, :] = 0.5
+
+                warping_mask = warp_mask_full.float().mean(dim=-1)
+                warping_mask = torch.sum(weights.unsqueeze(1) * warping_mask.permute(1, 0, 2).float(), dim=2)
+                warping_mask += torch.ones_like(warping_mask) * all_cumulated.unsqueeze(1)
+
+                warped_rgb_vals = torch.sum(
+                    weights.unsqueeze(-1).unsqueeze(-1) * sampled_rgb_val, dim=2
+                ).transpose(0, 1)
+
+            elif warping_params['warp'] == 'pixel':
+                N_rays, N_sampled = points.shape[:2]
+                N_pts = N_rays * N_sampled
+                N_src = warping_params["src_intr"].shape[0]
+                h, w = warping_params['src_img'].shape[-2:]
+
+                # pdb.set_trace()                
+                grid_px, in_front = self.project(points_flat, warping_params["inv_src_pose"][:, :3], warping_params["src_intr"])
+                grid = rend_util.normalize(grid_px.squeeze(0), h, w, clamp=10)
+
+                warping_mask_full = (in_front.squeeze(0) & (grid < 1).all(dim=-1) & (grid > -1).all(dim=-1))
+                # warping_mask_full = ((grid < 1).all(dim=-1) & (grid > -1).all(dim=-1))
+
+                # pdb.set_trace()
+                sampled_rgb_vals = F.grid_sample(warping_params['src_img'].squeeze(0), grid.unsqueeze(1), align_corners=True).squeeze(2).transpose(1, 2)
+                sampled_rgb_vals[~warping_mask_full, :] = 0.5  # set pixels out of image to grey
+                sampled_rgb_vals = sampled_rgb_vals.view(N_src, N_rays, -1, 3)
+                warped_rgb_vals = torch.sum(weights.unsqueeze(-1).unsqueeze(0) * sampled_rgb_vals, dim=2).transpose(0, 1)
+
+                # pdb.set_trace()
+                warping_mask_full = warping_mask_full.view(N_src, N_rays, -1).permute(1, 2, 0).float()
+                warping_mask = torch.sum(weights.unsqueeze(-1) * warping_mask_full, dim=1)
+                warping_mask += torch.ones_like(warping_mask) * all_cumulated.unsqueeze(1)
+                valid_hom_mask = None
+
+        else:
+            warped_rgb_vals = None
+            warping_mask = None
+            valid_hom_mask = None
+
         
         depth_values = torch.sum(weights * z_vals, 1, keepdims=True) / (weights.sum(dim=1, keepdims=True) +1e-8)
         # we should scale rendered distance to depth along z direction
         depth_values = depth_scale * depth_values
-        
-        acc_map = torch.sum(weights, -1)
-        # white background assumption
-        if self.white_bkgd and output_rgb:
-            rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
             
         # compute normal map
         normals = gradients / (gradients.norm(2, -1, keepdim=True) + 1e-6)
@@ -487,6 +625,9 @@ class MonoSDFNetwork(nn.Module):
             'alpha': alpha,
             'dists': dists,
             'normal_map': normal_map,
+            'warped_rgb_vals': warped_rgb_vals,
+            'warping_mask': warping_mask,
+            'valid_hom_mask': valid_hom_mask,
         }
         
         if self.training and eikonal:
@@ -515,95 +656,41 @@ class MonoSDFNetwork(nn.Module):
         intrinsics = input["intrinsics"]
         uv = input["uv"]
         pose = input["pose"]
+        warping_params = None
         
-        """
-        ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
-        
-        # we should use unnormalized ray direction for depth
-        ray_dirs_tmp, _ = rend_util.get_camera_params(uv, torch.eye(4).to(pose.device)[None], intrinsics)
-        depth_scale = ray_dirs_tmp[0, :, 2:]
-        
-        batch_size, num_pixels, _ = ray_dirs.shape
+        if self.use_warped_colors:
+            # ref_intrinsics = input["intrinsics"]
+            src_intr = input['src_intrinsics'][0][:, :3, :3]
+            inv_ref_intr = input['inv_intrinsics'][0][:3, :3]
+            src_img = input['src_rgb']
 
-        cam_loc = cam_loc.unsqueeze(1).repeat(1, num_pixels, 1).reshape(-1, 3)
-        ray_dirs = ray_dirs.reshape(-1, 3)
+            ref_pose = input["pose"][0]
+            inv_src_pose = input["src_inv_pose"][0]
+            inv_ref_pose = input["inv_pose"][0]
 
-        
-        z_vals, z_samples_eik = self.ray_sampler.get_z_vals(ray_dirs, cam_loc, self)
-        N_samples = z_vals.shape[1]
+            relative_proj = inv_src_pose @ ref_pose
+            R_rel = relative_proj[:, :3, :3]
+            t_rel = relative_proj[:, :3, 3:]
+            R_ref = inv_ref_pose[:3, :3]
+            t_ref = inv_ref_pose[:3, 3:]
 
-        points = cam_loc.unsqueeze(1) + z_vals.unsqueeze(2) * ray_dirs.unsqueeze(1)
-        points_flat = points.reshape(-1, 3)
-
-
-        dirs = ray_dirs.unsqueeze(1).repeat(1,N_samples,1)
-        dirs_flat = dirs.reshape(-1, 3)
-
-        sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat)
-        
-        rgb_flat = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors, indices)
-        rgb = rgb_flat.reshape(-1, N_samples, 3)
-
-        weights = self.volume_rendering(z_vals, sdf)
-
-        rgb_values = torch.sum(weights.unsqueeze(-1) * rgb, 1)
-        
-        depth_values = torch.sum(weights * z_vals, 1, keepdims=True) / (weights.sum(dim=1, keepdims=True) +1e-8)
-        # we should scale rendered distance to depth along z direction
-        depth_values = depth_scale * depth_values
-        
-        # white background assumption
-        if self.white_bkgd:
-            acc_map = torch.sum(weights, -1)
-            rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
-
-        output = {
-            'rgb':rgb,
-            'rgb_values': rgb_values,
-            'depth_values': depth_values,
-            'z_vals': z_vals,
-            'depth_vals': z_vals * depth_scale,
-            'sdf': sdf.reshape(z_vals.shape),
-            'weights': weights,
-        }
-        """
-        
-        output = self.forward_raw(input["uv"], input["pose"], input["intrinsics"], indices)
-
-        """
-        if self.training:
-            # Sample points for the eikonal loss
-            n_eik_points = batch_size * num_pixels
-            
-            eikonal_points = torch.empty(n_eik_points, 3).uniform_(-self.scene_bounding_sphere, self.scene_bounding_sphere).cuda()
-
-            # add some of the near surface points
-            eik_near_points = (cam_loc.unsqueeze(1) + z_samples_eik.unsqueeze(2) * ray_dirs.unsqueeze(1)).reshape(-1, 3)
-            eikonal_points = torch.cat([eikonal_points, eik_near_points], 0)
-            # add some neighbour points as unisurf
-            neighbour_points = eikonal_points + (torch.rand_like(eikonal_points) - 0.5) * 0.01   
-            eikonal_points = torch.cat([eikonal_points, neighbour_points], 0)
-                   
-            grad_theta = self.implicit_network.gradient(eikonal_points)
-            
-            # split gradient to eikonal points and neighbour ponits
-            output['grad_theta'] = grad_theta[:grad_theta.shape[0]//2]
-            output['grad_theta_nei'] = grad_theta[grad_theta.shape[0]//2:]
-        """
-        
-        """
-        # compute normal map
-        normals = gradients / (gradients.norm(2, -1, keepdim=True) + 1e-6)
-        normals = normals.reshape(-1, N_samples, 3)
-        normal_map = torch.sum(weights.unsqueeze(-1) * normals, 1)
-        
-        # transform to local coordinate system
-        rot = pose[0, :3, :3].permute(1, 0).contiguous()
-        normal_map = rot @ normal_map.permute(1, 0)
-        normal_map = normal_map.permute(1, 0).contiguous()
-        
-        output['normal_map'] = normal_map
-        """
+            warping_params = {
+                # "ref_intrinsics": ref_intrinsics,
+                "warp": "pixel",
+                "src_img": src_img,
+                "src_intr": src_intr,
+                "inv_ref_intr": inv_ref_intr,
+                "ref_pose": ref_pose,
+                "inv_src_pose": inv_src_pose,
+                "inv_ref_pose": inv_ref_pose,
+                "relative_proj": relative_proj,
+                "R_rel": R_rel,
+                "t_rel": t_rel,
+                "R_ref": R_ref,
+                "t_ref": t_ref,
+            }
+    
+        output = self.forward_raw(input["uv"], input["pose"], input["intrinsics"], indices, warping_params=warping_params)
         
         ################################
         #  forward for patched pixels
@@ -623,8 +710,6 @@ class MonoSDFNetwork(nn.Module):
         ################################
         output['unseen_depth_values'] = None
         output['unseen_normal_map'] = None
-        output['unseen_patch_depth_values'] = None
-        output['unseen_patch_normal_map'] = None
         output['unseen_sdf'] = None
         output['unseen_sigma'] = None
         output['unseen_acc'] = None
@@ -633,7 +718,9 @@ class MonoSDFNetwork(nn.Module):
         output['unseen_dists'] = None
         output['unseen_grad_theta'] = None
         output['unseen_grad_theta_nei'] = None
-        output['unseen_patch_grid_uv'] = None
+        output['unseen_patch_depth_values'] = None
+        output['unseen_patch_normal_map'] = None
+        output['unseen_patch_acc'] = None
         if self.training and self.use_unseen_pose:
             # for entropy loss
             output_unseen = self.forward_raw(input["unseen_uv"], input["unseen_pose"], input["intrinsics"], indices, eikonal=True, output_rgb=False)
@@ -653,40 +740,6 @@ class MonoSDFNetwork(nn.Module):
                 output['unseen_patch_depth_values'] = output_patch_unseen['depth_values']
                 output['unseen_patch_normal_map'] = output_patch_unseen['normal_map']
                 output['unseen_patch_acc'] = output_patch_unseen['acc']
-                output['unseen_patch_rgb_values'] = output_patch_unseen['rgb_values']
-
-                # sample["relative_pose"] = torch.linalg.inv(sample["unseen_pose"]) @ sample["pose"]
-                
-                
-                with torch.no_grad():
-                    R_unseen = input["unseen_pose"][:, :3, :3]
-                    t_unseen = input["unseen_pose"][:, :3, 3:]
-                    # seen_to_unseen_pose = torch.linalg.inv(input["pose"]) @ input["unseen_pose"]
-                    rel_pose = torch.linalg.inv(input["pose"]) @ input["unseen_pose"]
-                    R_rel = rel_pose[:, :3, :3]
-                    t_rel = rel_pose[:, :3, 3:]
-                    intr = input["intrinsics"][:, :3, :3]
-                    inv_intr = torch.linalg.inv(intr)
-
-                    normals = torch.nn.functional.normalize(output['unseen_patch_normal_map'], p=2, dim=-1)
-                    rot_normals = R_unseen @ normals.unsqueeze(-1)
-                    sign = torch.sign(output['unseen_patch_depth_values'].unsqueeze(-1))
-                    sign[sign == 0] = 1
-                    d = torch.clamp(torch.abs(output['unseen_patch_depth_values'].unsqueeze(-1)), 1e-8) * sign
-
-                    H = intr @ \
-                        (R_rel + t_rel @ rot_normals.view(-1, 1, 3) / d) @ \
-                        inv_intr
-
-                    grid, mask = self.patch_homography(H, input["unseen_patch_uv"])
-                    H, W = img_res
-                    grid[..., 0] = 2 * grid[..., 0] / (W - 1) - 1
-                    grid[..., 1] = 2 * grid[..., 1] / (H - 1) - 1
-                    grid = grid.reshape(1, -1, 1, 2)
-                    mask = mask & (torch.abs(grid[..., 0]) <= 1) & (torch.abs(grid[..., 1] <= 1))
-
-                output['unseen_patch_grid_uv'] = grid
-                output['unseen_patch_grid_mask'] = mask
 
         return output
 
@@ -702,15 +755,34 @@ class MonoSDFNetwork(nn.Module):
         shifted_free_energy = torch.cat([torch.zeros(dists.shape[0], 1).cuda(), free_energy[:, :-1]], dim=-1)  # shift one step
         alpha = 1 - torch.exp(-free_energy)  # probability of it is not empty here
         transmittance = torch.exp(-torch.cumsum(shifted_free_energy, dim=-1))  # probability of everything is empty up to now
+        no_shift_transmittance = torch.exp(-torch.cumsum(free_energy, dim=-1))  # probability of everything is empty up to now
         weights = alpha * transmittance # probability of the ray hits something here
+        all_cumulated = no_shift_transmittance[:, -1]
 
-        return weights, alpha, dists, density
+        # alpha = 1 - torch.exp(-free_energy)  # probability of it is not empty here
+        # transmittance = torch.cumprod((1 - alpha), dim=1).roll(1, dims=1)
+        # all_cumulated = transmittance[:, 0].clone()
+        # transmittance[:, 0] = 1
+        # weights = alpha * transmittance
+
+        return weights, alpha, all_cumulated, dists, density
+
+    def project(self, points, pose, intr):
+        xyz = (intr.unsqueeze(1) @ pose.unsqueeze(1) @ rend_util.add_hom(points).unsqueeze(-1))[..., :3, 0]
+        in_front = xyz[..., 2] > 0
+        grid = xyz[..., :2] / torch.clamp(xyz[..., 2:], 1e-8)
+        return grid, in_front
 
     def patch_homography(self, H, uv):
-        N = uv.shape[1]
-        uv = torch.cat([uv, torch.ones(uv.shape[:-1], device=uv.device).unsqueeze(-1)], dim=-1).view(N, 3, 1)
-        tmp = H @ uv
-        tmp = tmp.reshape(N, 1, 3)
+        N, Npx = uv.shape[:2]
+        Nsrc = H.shape[0]
+        H = H.view(Nsrc, N, -1, 3, 3)
+        hom_uv = rend_util.add_hom(uv)
+
+        # einsum is 30 times faster
+        # tmp = (H.view(Nsrc, N, -1, 1, 3, 3) @ hom_uv.view(1, N, 1, -1, 3, 1)).squeeze(-1).view(Nsrc, -1, 3)
+        tmp = torch.einsum("vprik,pok->vproi", H, hom_uv).reshape(Nsrc, -1, 3)
+
         grid = tmp[..., :2] / torch.clamp(tmp[..., 2:], 1e-8)
         mask = tmp[..., 2] > 0
         return grid, mask

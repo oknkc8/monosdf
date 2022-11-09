@@ -183,10 +183,13 @@ class SceneDatasetDN(torch.utils.data.Dataset):
 
         self.intrinsics_all = []
         self.pose_all = []
+        self.inv_intrinsics_all = []
+        self.inv_pose_all = []
         for scale_mat, world_mat in zip(scale_mats, world_mats):
             P = world_mat @ scale_mat
             P = P[:3, :4]
             intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
+            # pdb.set_trace()
 
             # because we do resize and center crop 384x384 when using omnidata model, we need to adjust the camera intrinsic accordingly
             if center_crop_type == 'center_crop_for_replica':
@@ -216,10 +219,14 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             
             self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
             self.pose_all.append(torch.from_numpy(pose).float())
+            self.inv_intrinsics_all.append(torch.inverse(torch.from_numpy(intrinsics).float()))
+            self.inv_pose_all.append(torch.inverse(torch.from_numpy(pose).float()))
 
+        # pdb.set_trace()
         self.rgb_images = []
         for path in image_paths:
             rgb = rend_util.load_rgb(path)
+            _, self.H, self.W = rgb.shape
             rgb = rgb.reshape(3, -1).transpose(1, 0)
             self.rgb_images.append(torch.from_numpy(rgb).float())
             
@@ -248,13 +255,23 @@ class SceneDatasetDN(torch.utils.data.Dataset):
                 self.mask_images.append(torch.from_numpy(mask.reshape(-1, 1)).float())
 
     def __len__(self):
-        return self.n_images
+        # return self.n_images
+        return self.n_images if self.num_views < 0 else self.num_views
 
     def __getitem__(self, idx):
+        src_idxs = None
         if self.num_views >= 0:
             image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
             # idx = image_ids[random.randint(0, self.num_views - 1)]
-            idx = image_ids[idx % self.num_views]
+            # idx = image_ids[idx % self.num_views]
+            
+            # src_idx = idx
+            # while src_idx == idx:
+            #     src_idx = random.randint(0, self.num_views - 1)
+
+            src_idxs = image_ids[:idx] + image_ids[idx+1:]
+            idx = image_ids[idx]
+            
         
         uv = np.mgrid[0:self.img_res[0], 0:self.img_res[1]].astype(np.int32)
         uv = torch.from_numpy(np.flip(uv, axis=0).copy()).float()
@@ -296,7 +313,15 @@ class SceneDatasetDN(torch.utils.data.Dataset):
         if self.unseen_sampling_patch_idx is not None:
             sample["unseen_patch_uv"] = uv[self.unseen_sampling_patch_idx, :]
 
-        # sample["relative_pose"] = torch.linalg.inv(sample["unseen_pose"]) @ sample["pose"]
+        if src_idxs is not None:
+            sample["inv_pose"] = self.inv_pose_all[idx]
+            sample["inv_intrinsics"] = self.inv_intrinsics_all[idx]
+            
+            sample["src_rgb"] = torch.stack([self.rgb_images[i].transpose(1,0).reshape(3, self.H, self.W) for i in src_idxs])
+            sample["src_pose"] = torch.stack([self.pose_all[i] for i in src_idxs])
+            sample["src_inv_pose"] = torch.stack([self.inv_pose_all[i] for i in src_idxs])
+            sample["src_intrinsics"] = torch.stack([self.intrinsics_all[i] for i in src_idxs])
+            sample["src_inv_intrinsics"] = torch.stack([self.inv_intrinsics_all[i] for i in src_idxs])
 
         return idx, sample, ground_truth
 
@@ -317,49 +342,63 @@ class SceneDatasetDN(torch.utils.data.Dataset):
 
         return tuple(all_parsed)
 
-    def change_sampling_idx(self, sampling_size):
+    def change_sampling_idx(self, sampling_size, h_patch_size=0):
         if sampling_size == -1:
             self.sampling_idx = None
         else:
-            self.sampling_idx = torch.randperm(self.total_pixels)[:sampling_size]
+            if h_patch_size:
+                idx_img = torch.arange(self.total_pixels).view(self.img_res[0], self.img_res[1])
+                if h_patch_size > 0:
+                    idx_img = idx_img[h_patch_size:-h_patch_size, h_patch_size:-h_patch_size]
+                idx_img = idx_img.reshape(-1)
+                self.sampling_idx = idx_img[torch.randperm(idx_img.shape[0])[:sampling_size]]
+            else:
+                self.sampling_idx = torch.randperm(self.total_pixels)[:sampling_size]
             
-    def change_unseen_sampling_idx(self, sampling_size):
+    def change_unseen_sampling_idx(self, sampling_size, h_patch_size=0):
         if sampling_size == -1:
             self.unseen_sampling_idx = None
         else:
-            self.unseen_sampling_idx = torch.randperm(self.total_pixels)[:sampling_size]
+            if h_patch_size:
+                idx_img = torch.arange(self.total_pixels).view(self.img_res[0], self.img_res[1])
+                if h_patch_size > 0:
+                    idx_img = idx_img[h_patch_size:-h_patch_size, h_patch_size:-h_patch_size]
+                idx_img = idx_img.reshape(-1)
+                self.unseen_sampling_idx = idx_img[torch.randperm(idx_img.shape[0])[:sampling_size]]
+            else:
+                self.unseen_sampling_idx = torch.randperm(self.total_pixels)[:sampling_size]
 
     def get_scale_mat(self):
         return np.load(self.cam_file)['scale_mat_0']
     
 
     # borrowed from RegNeRF
-    def change_sampling_patch_idx(self, sampling_size, patch_size=8):
+    def change_sampling_patch_idx(self, sampling_size, reg_patch_size=8):
         if sampling_size == -1:
             self.sampling_patch_idx = None
         else:
-            n_patches = sampling_size // (patch_size ** 2)
+            n_patches = sampling_size // (reg_patch_size ** 2)
             
             # Sample start locations
-            x0 = np.random.randint(0, self.img_res[1] - patch_size + 1, size=(n_patches, 1, 1))
-            y0 = np.random.randint(0, self.img_res[0] - patch_size + 1, size=(n_patches, 1, 1))
+            x0 = np.random.randint(0, self.img_res[1] - reg_patch_size + 1, size=(n_patches, 1, 1))
+            y0 = np.random.randint(0, self.img_res[0] - reg_patch_size + 1, size=(n_patches, 1, 1))
             xy0 = np.concatenate([x0, y0], axis=-1)
-            patch_xy = xy0 + np.stack(np.meshgrid(np.arange(patch_size), np.arange(patch_size), indexing='xy'), axis=-1).reshape(1, -1, 2)
+            patch_xy = xy0 + np.stack(np.meshgrid(np.arange(reg_patch_size), np.arange(reg_patch_size), indexing='xy'), axis=-1).reshape(1, -1, 2)
             
             patch_idx = patch_xy[..., 1] * self.img_res[1] + patch_xy[..., 0]
             self.sampling_patch_idx = torch.tensor(patch_idx, dtype=torch.int64).reshape(-1)
             
-    def change_unseen_sampling_patch_idx(self, sampling_size, patch_size=8):
+    def change_unseen_sampling_patch_idx(self, sampling_size, reg_patch_size=8):
         if sampling_size == -1:
             self.unseen_sampling_patch_idx = None
         else:
-            n_patches = sampling_size // (patch_size ** 2)
+            n_patches = sampling_size // (reg_patch_size ** 2)
             
             # Sample start locations
-            x0 = np.random.randint(0, self.img_res[1] - patch_size + 1, size=(n_patches, 1, 1))
-            y0 = np.random.randint(0, self.img_res[0] - patch_size + 1, size=(n_patches, 1, 1))
+            x0 = np.random.randint(0, self.img_res[1] - reg_patch_size + 1, size=(n_patches, 1, 1))
+            y0 = np.random.randint(0, self.img_res[0] - reg_patch_size + 1, size=(n_patches, 1, 1))
             xy0 = np.concatenate([x0, y0], axis=-1)
-            patch_xy = xy0 + np.stack(np.meshgrid(np.arange(patch_size), np.arange(patch_size), indexing='xy'), axis=-1).reshape(1, -1, 2)
+            patch_xy = xy0 + np.stack(np.meshgrid(np.arange(reg_patch_size), np.arange(reg_patch_size), indexing='xy'), axis=-1).reshape(1, -1, 2)
             
             patch_idx = patch_xy[..., 1] * self.img_res[1] + patch_xy[..., 0]
             self.unseen_sampling_patch_idx = torch.tensor(patch_idx, dtype=torch.int64).reshape(-1)

@@ -116,12 +116,12 @@ class ErrorBoundSampler(RaySampler):
         
         self.N_samples = N_samples
         self.N_samples_eval = N_samples_eval
-        self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=True,
-                                              anneal_near_far=anneal_near_far,
-                                              anneal_n_steps=anneal_n_steps,
-                                              anneal_init_perc=anneal_init_perc,
-                                              anneal_mid_perc=anneal_mid_perc) # replica scannet and T&T courtroom
-        #self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=inverse_sphere_bg)  # dtu and bmvs
+        # self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=True,
+        #                                       anneal_near_far=anneal_near_far,
+        #                                       anneal_n_steps=anneal_n_steps,
+        #                                       anneal_init_perc=anneal_init_perc,
+        #                                       anneal_mid_perc=anneal_mid_perc) # replica scannet and T&T courtroom
+        self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=inverse_sphere_bg)  # dtu and bmvs
 
         self.N_samples_extra = N_samples_extra
 
@@ -143,7 +143,7 @@ class ErrorBoundSampler(RaySampler):
         beta0 = model.density.get_beta().detach()
 
         # Start with uniform sampling
-        z_vals, near, far = self.uniform_sampler.get_z_vals(ray_dirs, cam_loc, model)
+        z_vals, near, far = self.uniform_sampler.get_z_vals_dtu_bmvs(ray_dirs, cam_loc, model)
         samples, samples_idx = z_vals, None
 
         # Get maximum beta from the upper bound (Lemma 2)
@@ -287,7 +287,7 @@ class ErrorBoundSampler(RaySampler):
         z_samples_eik = torch.gather(z_vals, 1, idx.unsqueeze(-1))
 
         if self.inverse_sphere_bg:
-            z_vals_inverse_sphere, _, _ = self.inverse_sphere_sampler.get_z_vals(ray_dirs, cam_loc, model)
+            z_vals_inverse_sphere, _, _ = self.inverse_sphere_sampler.get_z_vals_dtu_bmvs(ray_dirs, cam_loc, model)
             z_vals_inverse_sphere = z_vals_inverse_sphere * (1./self.scene_bounding_sphere)
             z_vals = (z_vals, z_vals_inverse_sphere)
 

@@ -26,9 +26,12 @@ def plot(implicit_network, indices, plot_data, path, epoch, img_res, plot_nimgs,
         # plot depth maps
         plot_depth_maps(plot_data['depth_map'], plot_data['depth_gt'], path, epoch, plot_nimgs, img_res, indices)
 
+        if 'warp_rgb' in plot_data:
+            plot_warp_images(plot_data['warp_rgb'], plot_data['warp_mask'], path, epoch, plot_nimgs, img_res, indices)
+
         # concat output images to single large image
         images = []
-        for name in ["rendering", "depth", "normal"]:
+        for name in ["rendering", "depth", "normal", "warp"]:
             images.append(cv2.imread('{0}/{1}/{1}_{2}_{3}.png'.format(path, name, epoch, indices[0])))        
 
         images = np.concatenate(images, axis=1)
@@ -504,6 +507,26 @@ def plot_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res, indice
     else:
         img.save('{0}/rendering/rendering_{1}_{2}.png'.format(path, epoch, indices[0]))
 
+def plot_warp_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res, indices, exposure=False):
+    ground_true = ground_true.cuda()
+
+    output_vs_gt = torch.cat((rgb_points, ground_true), dim=0)
+    output_vs_gt_plot = lin2img(output_vs_gt, img_res)
+
+    tensor = torchvision.utils.make_grid(output_vs_gt_plot,
+                                         scale_each=False,
+                                         normalize=False,
+                                         nrow=plot_nrow).cpu().detach().numpy()
+
+    tensor = tensor.transpose(1, 2, 0)
+    scale_factor = 255
+    tensor = (tensor * scale_factor).astype(np.uint8)
+
+    img = Image.fromarray(tensor)
+    if exposure:
+        img.save('{0}/rendering/exposure_{1}_{2}.png'.format(path, epoch, indices[0]))
+    else:
+        img.save('{0}/warp/warp_{1}_{2}.png'.format(path, epoch, indices[0]))
 
 def plot_depth_maps(depth_maps, ground_true, path, epoch, plot_nrow, img_res, indices):
     ground_true = ground_true.cuda()

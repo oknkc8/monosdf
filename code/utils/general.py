@@ -53,8 +53,13 @@ def merge_output(res, total_pixels, batch_size):
             model_outputs[entry] = torch.cat([r[entry].reshape(batch_size, -1, 1) for r in res],
                                              1).reshape(batch_size * total_pixels)
         else:
-            model_outputs[entry] = torch.cat([r[entry].reshape(batch_size, -1, r[entry].shape[-1]) for r in res],
-                                             1).reshape(batch_size * total_pixels, -1)
+            if not ('warp' in entry):
+                model_outputs[entry] = torch.cat([r[entry].reshape(batch_size, -1, r[entry].shape[-1]) for r in res],
+                                                1).reshape(batch_size * total_pixels, -1)
+            else:                
+                n_src = res[0][entry].shape[1]
+                model_outputs[entry] = torch.cat([r[entry].reshape(batch_size, -1, r[entry].shape[-1]) for r in res],
+                                                1).reshape(batch_size * total_pixels, n_src, -1)
 
     return model_outputs
 

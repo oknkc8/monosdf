@@ -1,6 +1,8 @@
 import torch
 from torch import nn
+import utils.rend_util as rend_util
 import utils.general as utils
+from utils.ssim import SSIM
 import math
 import pdb
 import torchvision.transforms
@@ -146,7 +148,7 @@ class ScaleAndShiftInvariantLoss(nn.Module):
     
     
 class MonoSDFLoss(nn.Module):
-    def __init__(self, rgb_loss, 
+    def __init__(self, rgb_loss,
                  eikonal_weight, 
                  normal_smooth_weight = 0.005,
                  patch_depth_smooth_weight = 0.005,
@@ -155,9 +157,12 @@ class MonoSDFLoss(nn.Module):
                  entropy_log_scaling=False,
                  entropy_acc_thresh=0.01,
                  patch_rgb_ncc_weight=0.01,
+                 patch_rgb_loss='l1',
+                 warped_rgb_weight=1,
                  depth_weight = 0.1,
                  normal_l1_weight = 0.05,
                  normal_cos_weight = 0.05,
+                 min_visibility = 1e-3,
                  end_step = -1,
                  start_reg_step=500):
         super().__init__()
@@ -169,12 +174,19 @@ class MonoSDFLoss(nn.Module):
         self.entropy_log_scaling = entropy_log_scaling
         self.entropy_acc_thresh = entropy_acc_thresh
         self.patch_rgb_ncc_weight = patch_rgb_ncc_weight
+        self.patch_rgb_loss = patch_rgb_loss
+        self.warped_rgb_weight = warped_rgb_weight
         self.depth_weight = depth_weight
         self.normal_l1_weight = normal_l1_weight
         self.normal_cos_weight = normal_cos_weight
+        self.min_visibility = min_visibility
         self.rgb_loss = utils.get_class(rgb_loss)(reduction='mean')
         
         self.depth_loss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
+
+        self.h_patch_size = 0
+        self.patch_offset = None
+        self.ssim = SSIM(self.h_patch_size)
         
         print(f"using weight for loss RGB_1.0 EK_{self.eikonal_weight} NSM_{self.normal_smooth_weight} PDSM_{self.patch_depth_smooth_weight} PNSM_{self.patch_normal_smooth_weight} Depth_{self.depth_weight} NormalL1_{self.normal_l1_weight} NormalCos_{self.normal_cos_weight}")
         
@@ -339,6 +351,7 @@ class MonoSDFLoss(nn.Module):
         return -1*prob*torch.log2(prob+1e-10)
         return prob*torch.log2(1-prob)
 
+    """
     def get_patch_rgb_ncc_loss(self, model_outputs, rgb_gt, img_res, patch_size):
         rgb_gt = rgb_gt.permute(0, 2, 1).reshape(-1, 3, img_res[0], img_res[1])
         patch_grid = model_outputs['unseen_patch_grid_uv']
@@ -375,6 +388,7 @@ class MonoSDFLoss(nn.Module):
         ncc = product / std
 
         return ncc
+    """
         
     
     def get_depth_loss(self, depth_pred, depth_gt, mask):
@@ -387,8 +401,53 @@ class MonoSDFLoss(nn.Module):
         l1 = torch.abs(normal_pred - normal_gt).sum(dim=-1).mean()
         cos = (1. - torch.sum(normal_pred * normal_gt, dim = -1)).mean()
         return l1, cos
+
+    def masked_patch_loss(self, rgb_values, rgb_gt, warp_mask):
+        npx, nsrc, npatch, _ = rgb_values.shape
+
+        warp_mask = warp_mask.float()
+
+        if self.patch_rgb_loss == "l1":
+            num = torch.sum(warp_mask.unsqueeze(-1).unsqueeze(-1) * torch.abs(rgb_values - rgb_gt.unsqueeze(1)),
+                            dim=1).sum(dim=1).sum(dim=1) / npatch
+
+        elif self.patch_rgb_loss == "ssim":
+            self.ssim = self.ssim.to(rgb_values.device)
+            num = torch.sum(warp_mask * self.ssim(rgb_values, rgb_gt), dim=1)
+
+        else:
+            raise NotImplementedError("Patch loss + " + self.patch_rgb_loss)
+
+        denom = torch.sum(warp_mask, dim=1)
+
+        valids = denom > self.min_visibility
         
-    def forward(self, model_outputs, ground_truth, patch_size, img_res):
+        return torch.sum(num[valids] / denom[valids]), valids
+
+    def masked_pixel_loss(self,rgb_values, rgb_gt, warp_mask):
+        npx, nsrc, _ = rgb_values.shape
+
+        if warp_mask.sum() == 0:
+            return torch.tensor(0.0).cuda().float(), torch.ones_like(warp_mask[:, 0])
+
+        warp_mask = warp_mask.float()
+
+        # pdb.set_trace()
+
+        num = torch.sum(warp_mask.unsqueeze(2) * torch.abs(rgb_values - rgb_gt.unsqueeze(1)), dim=1).sum(dim=1)
+        denom = torch.sum(warp_mask, dim=1)
+
+        valids = denom > self.min_visibility
+        rgb_loss = torch.sum(num[valids] / denom[valids])
+
+        return rgb_loss, valids
+
+    def set_patch_offset(self, h_patch_size):
+        self.h_patch_size = h_patch_size
+        self.ssim = SSIM(self.h_patch_size)
+        self.patch_offset = rend_util.build_patch_offset(self.h_patch_size)
+        
+    def forward(self, model_input, model_outputs, ground_truth, reg_patch_size, img_res):
         rgb_gt = ground_truth['rgb'].cuda()
         full_rgb_gt = ground_truth['full_rgb'].cuda()
         # monocular depth and normal
@@ -399,6 +458,32 @@ class MonoSDFLoss(nn.Module):
         normal_pred = model_outputs['normal_map'][None]
         
         rgb_loss = self.get_rgb_loss(model_outputs['rgb_values'], rgb_gt)
+
+        warped_rgb_loss = torch.tensor(0.0).cuda().float()
+        if model_outputs['warped_rgb_vals'] is not None:
+            warped_rgb_val = model_outputs['warped_rgb_vals']
+            patch_loss = len(warped_rgb_val.shape) == 4
+            uv = model_input['uv']
+            num_pixels = uv.shape[1]
+            i, j = uv[0, :, 1].long(), uv[0, :, 0].long()
+            full_rgb_gt = ground_truth['full_rgb'].cuda()
+            full_rgb_gt = full_rgb_gt.permute(0, 2, 1).reshape(-1, 3, img_res[0], img_res[1])
+            self.patch_offset = self.patch_offset.to(uv.device)
+            
+            if patch_loss:
+                rgb_patches_gt = full_rgb_gt[0, :, i.unsqueeze(1) + self.patch_offset[..., 1],
+                                            j.unsqueeze(1)+ self.patch_offset[..., 0]].permute(1, 2, 0)
+            else:
+                rgb_gt = full_rgb_gt[0, :, i, j].view(3, -1).t()
+
+            warp_mask = model_outputs['warping_mask']
+            if patch_loss:
+                mask = warp_mask * model_outputs['valid_hom_mask']
+                warped_rgb_loss, _ = self.masked_patch_loss(warped_rgb_val, rgb_patches_gt, mask)
+            else:
+                warped_rgb_loss, _ = self.masked_pixel_loss(warped_rgb_val, rgb_gt, warp_mask)
+            warped_rgb_loss /= num_pixels
+        
         
         if 'grad_theta' in model_outputs:
             eikonal_loss = self.get_eikonal_loss(model_outputs['grad_theta'])
@@ -410,7 +495,8 @@ class MonoSDFLoss(nn.Module):
         # combine with GT
         mask = (ground_truth['mask'] > 0.5).cuda() & mask
 
-        depth_loss = self.get_depth_loss(depth_pred, depth_gt, mask)
+        # depth_loss = self.get_depth_loss(depth_pred, depth_gt, mask)
+        depth_loss = 0.0
         if isinstance(depth_loss, float):
             depth_loss = torch.tensor(0.0).cuda().float()    
         
@@ -423,13 +509,13 @@ class MonoSDFLoss(nn.Module):
         patch_depth_smooth_loss = torch.tensor(0.0).cuda().float()
         patch_normal_smooth_loss = torch.tensor(0.0).cuda().float()
         if model_outputs['patch_depth_values'] is not None:
-            patch_depth_smooth_loss = self.get_patch_depth_smooth_loss(model_outputs, patch_size)
+            patch_depth_smooth_loss = self.get_patch_depth_smooth_loss(model_outputs, reg_patch_size)
         if model_outputs['patch_normal_map'] is not None:
-            patch_normal_smooth_loss = self.get_patch_normal_smooth_loss(model_outputs, patch_size)
+            patch_normal_smooth_loss = self.get_patch_normal_smooth_loss(model_outputs, reg_patch_size)
 
         # patch rgb normalized cross correlation loss (seen to unseen pose)
-        if model_outputs['unseen_patch_grid_uv'] is not None:
-            patch_rgb_ncc_loss, unseen_rgb, sampled_rgb = self.get_patch_rgb_ncc_loss(model_outputs, full_rgb_gt, img_res, patch_size)
+        # if model_outputs['unseen_patch_grid_uv'] is not None:
+        #     patch_rgb_ncc_loss, unseen_rgb, sampled_rgb = self.get_patch_rgb_ncc_loss(model_outputs, full_rgb_gt, img_res, reg_patch_size)
 
         # ray entropy loss (seen / unseen pose)
         entropy_loss = self.get_entropy_loss(model_outputs)
@@ -444,16 +530,19 @@ class MonoSDFLoss(nn.Module):
             patch_depth_smooth_loss = torch.tensor(0.0).cuda().float()
             patch_normal_smooth_loss = torch.tensor(0.0).cuda().float()
             entropy_loss = torch.tensor(0.0).cuda().float()
-            patch_rgb_ncc_loss = torch.tensor(0.0).cuda().float()
+            # patch_rgb_ncc_loss = torch.tensor(0.0).cuda().float()
+            warped_rgb_loss = torch.tensor(0.0).cuda().float()
             entropy_weight = 0
             patch_normal_smooth_weight = 0
             patch_depth_smooth_weight = 0
-            patch_rgb_ncc_weight = 0
+            # patch_rgb_ncc_weight = 0
+            warped_rgb_weight = 0
         else:
             entropy_weight = self.entropy_weight
             patch_normal_smooth_weight = self.patch_normal_smooth_weight
             patch_depth_smooth_weight = self.patch_depth_smooth_weight
-            patch_rgb_ncc_weight = self.patch_rgb_ncc_weight
+            # patch_rgb_ncc_weight = self.patch_rgb_ncc_weight
+            warped_rgb_weight = self.warped_rgb_weight
 
 
         # detach loss which set weight as zero
@@ -467,8 +556,10 @@ class MonoSDFLoss(nn.Module):
             patch_normal_smooth_loss = patch_normal_smooth_loss.detach()
         if entropy_weight == 0:
             entropy_loss = entropy_loss.detach()
-        if patch_rgb_ncc_weight == 0:
-            patch_rgb_ncc_loss = patch_rgb_ncc_loss.detach()
+        # if patch_rgb_ncc_weight == 0:
+        #     patch_rgb_ncc_loss = patch_rgb_ncc_loss.detach()
+        if warped_rgb_weight == 0:
+            warped_rgb_loss = warped_rgb_loss.detach()
         if self.depth_weight == 0:
             depth_loss = depth_loss.detach()
         if self.normal_l1_weight == 0:
@@ -485,7 +576,7 @@ class MonoSDFLoss(nn.Module):
                patch_depth_smooth_weight * patch_depth_smooth_loss +\
                patch_normal_smooth_weight * patch_normal_smooth_loss +\
                entropy_weight * entropy_loss +\
-               patch_rgb_ncc_weight * patch_rgb_ncc_loss +\
+               warped_rgb_weight * warped_rgb_loss +\
                decay * self.depth_weight * depth_loss +\
                decay * self.normal_l1_weight * normal_l1 +\
                decay * self.normal_cos_weight * normal_cos
@@ -498,12 +589,13 @@ class MonoSDFLoss(nn.Module):
             'patch_depth_smooth_loss': patch_depth_smooth_loss,
             'patch_normal_smooth_loss': patch_normal_smooth_loss,
             'entropy_loss': entropy_loss,
-            'patch_rgb_ncc_loss': patch_rgb_ncc_loss,
+            # 'patch_rgb_ncc_loss': patch_rgb_ncc_loss,
+            'warped_rgb_loss': warped_rgb_loss,
             'depth_loss': depth_loss,
             'normal_l1': normal_l1,
             'normal_cos': normal_cos,
-            'unseen_rgb': unseen_rgb,
-            'sampled_rgb': sampled_rgb
+            # 'unseen_rgb': unseen_rgb,
+            # 'sampled_rgb': sampled_rgb
         }
 
         return output
