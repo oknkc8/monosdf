@@ -212,6 +212,7 @@ class MonoSDFTrainRunner():
 
             if self.GPU_INDEX == 0 and self.do_vis and epoch % self.plot_freq == 0:
                 self.model.eval()
+                self.model.module.h_patch_size = 0
 
                 self.train_dataset.change_sampling_idx(-1, self.h_patch_size)
                 self.train_dataset.change_sampling_patch_idx(-1, self.h_patch_size)
@@ -248,6 +249,7 @@ class MonoSDFTrainRunner():
                         )
 
                 self.model.train()
+                self.model.module.h_patch_size = self.h_patch_size
             self.train_dataset.change_sampling_idx(self.num_pixels, self.h_patch_size)
             self.train_dataset.change_sampling_patch_idx(self.num_pixels, self.reg_patch_size)
             self.train_dataset.change_unseen_sampling_idx(self.num_pixels, self.h_patch_size)
