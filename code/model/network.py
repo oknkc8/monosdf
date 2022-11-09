@@ -455,38 +455,6 @@ class MonoSDFNetwork(nn.Module):
 
         weights, alpha, all_cumulated, dists, density = self.volume_rendering(z_vals, sdf)
         acc_map = torch.sum(weights, -1)
-        
-        ##########################################
-        # ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
-        # batch_size, num_pixels, _ = ray_dirs.shape
-        # self.implicit_network.eval()
-
-        # # sample points along the camera ray (volSDF method)
-        # with torch.no_grad():
-        #     sampled_points = self.ray_tracer(implicit_network=self.implicit_network,
-        #                                      cam_loc=cam_loc,
-        #                                      ray_directions=ray_dirs)
-
-        #     z_vals = torch.norm(sampled_points - cam_loc, dim=-1)
-
-        # self.implicit_network.train()
-        # ray_dirs = ray_dirs.reshape(-1, 3)
-
-        # N, Ns, _ = sampled_points.shape
-
-        # flat_sampled_points = sampled_points.view(-1, 3)
-        # # output, g = self.implicit_network.gradient(flat_sampled_points)
-        # sdf, feature_vectors, gradients = self.implicit_network.get_outputs(flat_sampled_points)
-        # sdf = sdf.view(N, Ns)
-        # normals = gradients / (gradients.norm(2, -1, keepdim=True) + 1e-6)
-
-        # weights, alpha, all_cumulated, dists, density = self.volume_rendering(z_vals, sdf)
-        # acc_map = torch.sum(weights, -1)
-        
-        # intersection_points = torch.sum(weights.unsqueeze(-1) * sampled_points, dim=1)
-        # intersection_points += all_cumulated[:, None] * sampled_points[:, -1] # background point is the last point (i.e. intersection with world sphere)
-        # network_object_mask = (all_cumulated < 0.5)  # no intersection if background contribution is more than half
-
 
         rgb = None
         rgb_values = None
@@ -500,7 +468,7 @@ class MonoSDFNetwork(nn.Module):
             rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
 
         if warping_params is not None:
-            if warping_params['warp'] == 'patch':
+            if self.h_patch_size > 0:
                 with torch.no_grad():
                     sampled_dists = torch.norm(points - cam_loc.unsqueeze(1), dim=-1).reshape(-1, 1)
 
@@ -566,7 +534,7 @@ class MonoSDFNetwork(nn.Module):
                     weights.unsqueeze(-1).unsqueeze(-1) * sampled_rgb_val, dim=2
                 ).transpose(0, 1)
 
-            elif warping_params['warp'] == 'pixel':
+            elif self.h_patch_size == 0:
                 N_rays, N_sampled = points.shape[:2]
                 N_pts = N_rays * N_sampled
                 N_src = warping_params["src_intr"].shape[0]
@@ -674,8 +642,6 @@ class MonoSDFNetwork(nn.Module):
             t_ref = inv_ref_pose[:3, 3:]
 
             warping_params = {
-                # "ref_intrinsics": ref_intrinsics,
-                "warp": "pixel",
                 "src_img": src_img,
                 "src_intr": src_intr,
                 "inv_ref_intr": inv_ref_intr,
