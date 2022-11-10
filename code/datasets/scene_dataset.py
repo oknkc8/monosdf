@@ -262,6 +262,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
         src_idxs = None
         if self.num_views >= 0:
             image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+            image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views] # for dtu scan 24
             # idx = image_ids[random.randint(0, self.num_views - 1)]
             # idx = image_ids[idx % self.num_views]
             

@@ -421,6 +421,7 @@ class MonoSDFNetwork(nn.Module):
         self.use_patch_reg = conf.get_bool('use_patch_reg', default=False)
         self.use_unseen_pose = conf.get_bool('use_unseen_pose', default=False)  
         self.use_warped_colors = conf.get_bool('use_warped_colors', default=False)
+        self.use_occ_detector = conf.get_bool('use_occ_detector', default=False)
 
         self.h_patch_size = conf.get_int('h_patch_size', default=False)
         self.plane_dist_thresh = 1e-3
@@ -559,10 +560,45 @@ class MonoSDFNetwork(nn.Module):
                 warping_mask += torch.ones_like(warping_mask) * all_cumulated.unsqueeze(1)
                 valid_hom_mask = None
 
+            # occlusion mask
+            if self.use_occ_detector:
+                intersection_points = torch.sum(weights.unsqueeze(-1) * points, dim=1)
+                intersection_points += all_cumulated[:, None] * points[:, -1] # background point is the last point (i.e. intersection with world sphere)
+                network_object_mask = (all_cumulated < 0.5) # no intersection if background contribution is more than half
+                with torch.no_grad():
+                    N_src = warping_params['src_pose'].shape[0]
+                    N_rays = intersection_points.shape[0]
+                    cam_locs_src = warping_params['src_pose'][:, :3, 3]
+                    ray_dirs_src = intersection_points.unsqueeze(1) - cam_locs_src.unsqueeze(0)
+
+                    cam_locs_src = cam_locs_src.unsqueeze(0).repeat(N_rays, 1, 1).reshape(-1, 3)
+                    ray_dirs_src = ray_dirs_src.reshape(-1, 3)
+
+                    z_vals_src, _ = self.ray_sampler.get_z_vals(ray_dirs_src, cam_locs_src, self)
+                    N_samples_src = z_vals.shape[1]
+
+                    points_src = cam_locs_src.unsqueeze(1) + z_vals_src.unsqueeze(2) * ray_dirs_src.unsqueeze(1)
+                    points_flat_src = points_src.reshape(-1, 3)
+
+                    dirs_src = ray_dirs_src.unsqueeze(1).repeat(1,N_samples_src,1)
+                    dirs_flat_src = dirs_src.reshape(-1, 3)
+
+                    sdf_src = self.implicit_network(points_flat_src)[:,:1]
+                    _, alpha_src, _, _, _ = self.volume_rendering(z_vals_src, sdf_src)
+
+                    occlusion_mask = 1 - torch.prod(1 - alpha_src, dim=-1)
+                    occlusion_mask = occlusion_mask.reshape(N_rays, N_src)
+                    valid_mask = network_object_mask.unsqueeze(-1) & (warping_mask > 0.5)
+                    # valid_mask = (warping_mask > 0.5)
+                    occlusion_mask[~valid_mask] = 0
+            else:
+                occlusion_mask = None
+
         else:
             warped_rgb_vals = None
             warping_mask = None
             valid_hom_mask = None
+            occlusion_mask = None
 
         
         depth_values = torch.sum(weights * z_vals, 1, keepdims=True) / (weights.sum(dim=1, keepdims=True) +1e-8)
@@ -595,6 +631,7 @@ class MonoSDFNetwork(nn.Module):
             'warped_rgb_vals': warped_rgb_vals,
             'warping_mask': warping_mask,
             'valid_hom_mask': valid_hom_mask,
+            'occlusion_mask': occlusion_mask,
         }
         
         if self.training and eikonal:
@@ -632,6 +669,7 @@ class MonoSDFNetwork(nn.Module):
             src_img = input['src_rgb']
 
             ref_pose = input["pose"][0]
+            src_pose = input["src_pose"][0]
             inv_src_pose = input["src_inv_pose"][0]
             inv_ref_pose = input["inv_pose"][0]
 
@@ -646,6 +684,7 @@ class MonoSDFNetwork(nn.Module):
                 "src_intr": src_intr,
                 "inv_ref_intr": inv_ref_intr,
                 "ref_pose": ref_pose,
+                "src_pose": src_pose,
                 "inv_src_pose": inv_src_pose,
                 "inv_ref_pose": inv_ref_pose,
                 "relative_proj": relative_proj,

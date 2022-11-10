@@ -230,7 +230,8 @@ class MonoSDFTrainRunner():
                          'normal_map': out['normal_map'].detach(),
                          'depth_values': out['depth_values'].detach(),
                          'warped_rgb_vals': out['warped_rgb_vals'].detach(),
-                         'warping_mask': out['warping_mask'].detach()}
+                         'warping_mask': out['warping_mask'].detach(),
+                         'occlusion_mask': out['occlusion_mask'].detach()}
                     if 'rgb_un_values' in out:
                         d['rgb_un_values'] = out['rgb_un_values'].detach()
                     res.append(d)
@@ -250,6 +251,10 @@ class MonoSDFTrainRunner():
 
                 self.model.train()
                 self.model.module.h_patch_size = self.h_patch_size
+                del model_outputs
+                del res
+                torch.cuda.empty_cache()
+                
             self.train_dataset.change_sampling_idx(self.num_pixels, self.h_patch_size)
             self.train_dataset.change_sampling_patch_idx(self.num_pixels, self.reg_patch_size)
             self.train_dataset.change_unseen_sampling_idx(self.num_pixels, self.h_patch_size)
@@ -283,7 +288,7 @@ class MonoSDFTrainRunner():
                 
                 psnr = rend_util.get_psnr(model_outputs['rgb_values'],
                                           ground_truth['rgb'].cuda().reshape(-1,3))
-                
+                del model_outputs
                 self.iter_step += 1                
                 
                 if self.GPU_INDEX == 0:
@@ -350,8 +355,12 @@ class MonoSDFTrainRunner():
         warp_rgb = model_outputs['warped_rgb_vals']
         nsrc = warp_rgb.shape[1]
         warp_rgb = warp_rgb.reshape(batch_size, num_samples, nsrc, 3)
-        # warp_rgb = model_outputs[f"warping_mask"].unsqueeze(0) * warp_rgb + (1 - model_outputs[f"warping_mask"]).unsqueeze(0) * torch.tensor([0, 1, 0]).to(warp_rgb.device).float()
-        warp_mask = model_outputs[f"warping_mask"].unsqueeze(0) * torch.tensor([0, 0, 1]).to(warp_rgb.device).float() + (1 - model_outputs[f"warping_mask"]).unsqueeze(0) * torch.tensor([0, 1, 0]).to(warp_rgb.device).float()
+        warp_mask = model_outputs[f"warping_mask"].unsqueeze(0) * warp_rgb + (1 - model_outputs[f"warping_mask"]).unsqueeze(0) * torch.tensor([0, 1, 0]).to(warp_rgb.device).float()
+        # warp_mask = model_outputs[f"warping_mask"].unsqueeze(0) * torch.tensor([0, 0, 1]).to(warp_rgb.device).float() + (1 - model_outputs[f"warping_mask"]).unsqueeze(0) * torch.tensor([0, 1, 0]).to(warp_rgb.device).float()
+        if f"occlusion_mask" in model_outputs:
+            occlusion_mask = model_outputs[f"occlusion_mask"]
+            inv_occlusion_mask = 1 - occlusion_mask
+            warp_mask = inv_occlusion_mask.unsqueeze(0) * warp_mask + occlusion_mask.unsqueeze(0) * torch.tensor([0, 0, 1]).to(warp_rgb.device).float()
         
         # save point cloud
         depth = depth_map.reshape(1, 1, self.img_res[0], self.img_res[1])

@@ -477,11 +477,17 @@ class MonoSDFLoss(nn.Module):
                 rgb_gt = full_rgb_gt[0, :, i, j].view(3, -1).t()
 
             warp_mask = model_outputs['warping_mask']
+            occlusion_mask = model_outputs['occlusion_mask']
+            if occlusion_mask is not None:
+                mask = warp_mask * (1 - occlusion_mask)
+            else:
+                mask = warp_mask
+            
             if patch_loss:
-                mask = warp_mask * model_outputs['valid_hom_mask']
+                mask = mask * model_outputs['valid_hom_mask']
                 warped_rgb_loss, _ = self.masked_patch_loss(warped_rgb_val, rgb_patches_gt, mask)
             else:
-                warped_rgb_loss, _ = self.masked_pixel_loss(warped_rgb_val, rgb_gt, warp_mask)
+                warped_rgb_loss, _ = self.masked_pixel_loss(warped_rgb_val, rgb_gt, mask)
             warped_rgb_loss /= num_pixels
         
         
@@ -495,8 +501,8 @@ class MonoSDFLoss(nn.Module):
         # combine with GT
         mask = (ground_truth['mask'] > 0.5).cuda() & mask
 
-        # depth_loss = self.get_depth_loss(depth_pred, depth_gt, mask)
-        depth_loss = 0.0
+        depth_loss = self.get_depth_loss(depth_pred, depth_gt, mask)
+        # depth_loss = 0.0
         if isinstance(depth_loss, float):
             depth_loss = torch.tensor(0.0).cuda().float()    
         
@@ -522,16 +528,16 @@ class MonoSDFLoss(nn.Module):
         
         # compute decay weights 
         if self.end_step > 0:
-            decay = math.exp(-self.step / self.end_step * 10.)
+            decay = math.exp(-(self.step - self.start_reg_step) / (self.end_step - self.start_reg_step) * 10.)
         else:
             decay = 1.0
 
         if self.step < self.start_reg_step:
-            patch_depth_smooth_loss = torch.tensor(0.0).cuda().float()
-            patch_normal_smooth_loss = torch.tensor(0.0).cuda().float()
-            entropy_loss = torch.tensor(0.0).cuda().float()
-            # patch_rgb_ncc_loss = torch.tensor(0.0).cuda().float()
-            warped_rgb_loss = torch.tensor(0.0).cuda().float()
+            # patch_depth_smooth_loss = torch.tensor(0.0).cuda().float()
+            # patch_normal_smooth_loss = torch.tensor(0.0).cuda().float()
+            # entropy_loss = torch.tensor(0.0).cuda().float()
+            # # patch_rgb_ncc_loss = torch.tensor(0.0).cuda().float()
+            # warped_rgb_loss = torch.tensor(0.0).cuda().float()
             entropy_weight = 0
             patch_normal_smooth_weight = 0
             patch_depth_smooth_weight = 0
