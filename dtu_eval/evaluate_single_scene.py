@@ -11,6 +11,7 @@ import argparse
 import trimesh
 from pathlib import Path
 import subprocess
+from tqdm import tqdm
 
 import sys
 sys.path.append("../code")
@@ -32,7 +33,7 @@ def cull_scan(scan, mesh_path, result_mesh_file):
 
     intrinsics_all = []
     pose_all = []
-    for scale_mat, world_mat in zip(scale_mats, world_mats):
+    for scale_mat, world_mat in tqdm(zip(scale_mats, world_mats)):
         P = world_mat @ scale_mat
         P = P[:3, :4]
         intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
@@ -61,7 +62,7 @@ def cull_scan(scan, mesh_path, result_mesh_file):
     vertices = vertices.float()
     
     sampled_masks = []
-    for i in range(n_images):
+    for i in tqdm(range(n_images)):
         pose = pose_all[i]
         w2c = torch.inverse(pose).cuda()
         intrinsic = intrinsics_all[i].cuda()

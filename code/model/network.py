@@ -422,10 +422,16 @@ class MonoSDFNetwork(nn.Module):
         self.use_unseen_pose = conf.get_bool('use_unseen_pose', default=False)  
         self.use_warped_colors = conf.get_bool('use_warped_colors', default=False)
         self.use_occ_detector = conf.get_bool('use_occ_detector', default=False)
+        # self.occ_min_distance = conf.get_float('occ_min_distance', default=0.01)
 
         self.h_patch_size = conf.get_int('h_patch_size', default=False)
+        self.warp_pixel_patch_both = False
         self.plane_dist_thresh = 1e-3
         self.z_axis = torch.tensor([0, 0, 1]).float()
+        self.offsets = rend_util.build_patch_offset(self.h_patch_size)
+
+    def update_h_patch_size(self, h_patch_size):
+        self.h_patch_size = h_patch_size
         self.offsets = rend_util.build_patch_offset(self.h_patch_size)
 
     def forward_raw(self, uv, pose, intrinsics, indices, eikonal=True, output_rgb=True, warping_params=None):
@@ -468,6 +474,14 @@ class MonoSDFNetwork(nn.Module):
         if self.white_bkgd and output_rgb:
             rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
 
+        warped_rgb_vals_patch = None
+        warping_mask_patch = None
+        valid_hom_mask_patch = None
+        warped_rgb_vals_pixel = None
+        warping_mask_pixel = None
+        valid_hom_mask_pixel = None
+        occlusion_mask_patch = None
+        occlusion_mask_pixel = None
         if warping_params is not None:
             if self.h_patch_size > 0:
                 with torch.no_grad():
@@ -489,8 +503,8 @@ class MonoSDFNetwork(nn.Module):
                                 torch.abs(d1 - d2) > self.plane_dist_thresh) & ((d2 / d1) < 1)
 
                     valid_hom = valid_hom.view(N_rays, N_sampled, N_src)
-                    valid_hom_mask = torch.sum(weights.unsqueeze(1) * valid_hom.transpose(1, 2).float(), dim=2)
-                    valid_hom_mask += torch.ones_like(valid_hom_mask) * all_cumulated.unsqueeze(1)
+                    valid_hom_mask_patch = torch.sum(weights.unsqueeze(1) * valid_hom.transpose(1, 2).float(), dim=2)
+                    valid_hom_mask_patch += torch.ones_like(valid_hom_mask_patch) * all_cumulated.unsqueeze(1)
 
                     d1 = d1.squeeze()
                     sign = torch.sign(d1)
@@ -527,15 +541,15 @@ class MonoSDFNetwork(nn.Module):
                 sampled_rgb_val = sampled_rgb_val.view(N_src, N_rays, N_sampled, N_pixels, 3)
                 sampled_rgb_val[~warp_mask_full, :] = 0.5
 
-                warping_mask = warp_mask_full.float().mean(dim=-1)
-                warping_mask = torch.sum(weights.unsqueeze(1) * warping_mask.permute(1, 0, 2).float(), dim=2)
-                warping_mask += torch.ones_like(warping_mask) * all_cumulated.unsqueeze(1)
+                warping_mask_patch = warp_mask_full.float().mean(dim=-1)
+                warping_mask_patch = torch.sum(weights.unsqueeze(1) * warping_mask_patch.permute(1, 0, 2).float(), dim=2)
+                warping_mask_patch += torch.ones_like(warping_mask_patch) * all_cumulated.unsqueeze(1)
 
-                warped_rgb_vals = torch.sum(
+                warped_rgb_vals_patch = torch.sum(
                     weights.unsqueeze(-1).unsqueeze(-1) * sampled_rgb_val, dim=2
                 ).transpose(0, 1)
 
-            elif self.h_patch_size == 0:
+            if self.h_patch_size == 0 or self.warp_pixel_patch_both:
                 N_rays, N_sampled = points.shape[:2]
                 N_pts = N_rays * N_sampled
                 N_src = warping_params["src_intr"].shape[0]
@@ -552,13 +566,13 @@ class MonoSDFNetwork(nn.Module):
                 sampled_rgb_vals = F.grid_sample(warping_params['src_img'].squeeze(0), grid.unsqueeze(1), align_corners=True).squeeze(2).transpose(1, 2)
                 sampled_rgb_vals[~warping_mask_full, :] = 0.5  # set pixels out of image to grey
                 sampled_rgb_vals = sampled_rgb_vals.view(N_src, N_rays, -1, 3)
-                warped_rgb_vals = torch.sum(weights.unsqueeze(-1).unsqueeze(0) * sampled_rgb_vals, dim=2).transpose(0, 1)
+                warped_rgb_vals_pixel = torch.sum(weights.unsqueeze(-1).unsqueeze(0) * sampled_rgb_vals, dim=2).transpose(0, 1)
 
                 # pdb.set_trace()
                 warping_mask_full = warping_mask_full.view(N_src, N_rays, -1).permute(1, 2, 0).float()
-                warping_mask = torch.sum(weights.unsqueeze(-1) * warping_mask_full, dim=1)
-                warping_mask += torch.ones_like(warping_mask) * all_cumulated.unsqueeze(1)
-                valid_hom_mask = None
+                warping_mask_pixel = torch.sum(weights.unsqueeze(-1) * warping_mask_full, dim=1)
+                warping_mask_pixel += torch.ones_like(warping_mask_pixel) * all_cumulated.unsqueeze(1)
+                valid_hom_mask_pixel = None
 
             # occlusion mask
             if self.use_occ_detector:
@@ -570,11 +584,14 @@ class MonoSDFNetwork(nn.Module):
                     N_rays = intersection_points.shape[0]
                     cam_locs_src = warping_params['src_pose'][:, :3, 3]
                     ray_dirs_src = intersection_points.unsqueeze(1) - cam_locs_src.unsqueeze(0)
+                    max_dist = torch.norm(ray_dirs_src, dim=-1).reshape(-1) - 0.01
+                    ray_dirs_src = F.normalize(ray_dirs_src, dim=-1)
 
                     cam_locs_src = cam_locs_src.unsqueeze(0).repeat(N_rays, 1, 1).reshape(-1, 3)
                     ray_dirs_src = ray_dirs_src.reshape(-1, 3)
+                    # max_dist = max_dist.reshape(-1) - 0.01
 
-                    z_vals_src, _ = self.ray_sampler.get_z_vals(ray_dirs_src, cam_locs_src, self)
+                    z_vals_src, _ = self.ray_sampler.get_z_vals(ray_dirs_src, cam_locs_src, self, max_dist)
                     N_samples_src = z_vals.shape[1]
 
                     points_src = cam_locs_src.unsqueeze(1) + z_vals_src.unsqueeze(2) * ray_dirs_src.unsqueeze(1)
@@ -584,21 +601,18 @@ class MonoSDFNetwork(nn.Module):
                     dirs_flat_src = dirs_src.reshape(-1, 3)
 
                     sdf_src = self.implicit_network(points_flat_src)[:,:1]
-                    _, alpha_src, _, _, _ = self.volume_rendering(z_vals_src, sdf_src)
+                    _, alpha_src, _, _, _ = self.volume_rendering(z_vals_src, sdf_src, occ_mask=True)
 
                     occlusion_mask = 1 - torch.prod(1 - alpha_src, dim=-1)
                     occlusion_mask = occlusion_mask.reshape(N_rays, N_src)
-                    valid_mask = network_object_mask.unsqueeze(-1) & (warping_mask > 0.5)
-                    # valid_mask = (warping_mask > 0.5)
-                    occlusion_mask[~valid_mask] = 0
-            else:
-                occlusion_mask = None
-
-        else:
-            warped_rgb_vals = None
-            warping_mask = None
-            valid_hom_mask = None
-            occlusion_mask = None
+                    if warping_mask_patch is not None:
+                        occlusion_mask_patch = occlusion_mask.reshape(N_rays, N_src)
+                        valid_mask_patch = network_object_mask.unsqueeze(-1) & (warping_mask_patch > 0.5)
+                        occlusion_mask_patch[~valid_mask_patch] = 0
+                    if warping_mask_pixel is not None:
+                        occlusion_mask_pixel = occlusion_mask.reshape(N_rays, N_src)
+                        valid_mask_pixel = network_object_mask.unsqueeze(-1) & (warping_mask_pixel > 0.5)
+                        occlusion_mask_pixel[~valid_mask_pixel] = 0
 
         
         depth_values = torch.sum(weights * z_vals, 1, keepdims=True) / (weights.sum(dim=1, keepdims=True) +1e-8)
@@ -628,10 +642,14 @@ class MonoSDFNetwork(nn.Module):
             'alpha': alpha,
             'dists': dists,
             'normal_map': normal_map,
-            'warped_rgb_vals': warped_rgb_vals,
-            'warping_mask': warping_mask,
-            'valid_hom_mask': valid_hom_mask,
-            'occlusion_mask': occlusion_mask,
+            'warped_rgb_vals_patch': warped_rgb_vals_patch,
+            'warping_mask_patch': warping_mask_patch,
+            'valid_hom_mask_patch': valid_hom_mask_patch,
+            'warped_rgb_vals_pixel': warped_rgb_vals_pixel,
+            'warping_mask_pixel': warping_mask_pixel,
+            'valid_hom_mask_pixel': valid_hom_mask_pixel,
+            'occlusion_mask_patch': occlusion_mask_patch,
+            'occlusion_mask_pixel': occlusion_mask_pixel,
         }
         
         if self.training and eikonal:
@@ -747,12 +765,16 @@ class MonoSDFNetwork(nn.Module):
 
         return output
 
-    def volume_rendering(self, z_vals, sdf):
+    def volume_rendering(self, z_vals, sdf, occ_mask=False):
         density_flat = self.density(sdf)
         density = density_flat.reshape(-1, z_vals.shape[1])  # (batch_size * num_pixels) x N_samples
 
         dists = z_vals[:, 1:] - z_vals[:, :-1]
-        dists = torch.cat([dists, torch.tensor([1e10]).cuda().unsqueeze(0).repeat(dists.shape[0], 1)], -1)
+        if not occ_mask:
+            dists = torch.cat([dists, torch.tensor([1e10]).cuda().unsqueeze(0).repeat(dists.shape[0], 1)], -1)
+        else:
+            density = density[:, :-1]
+            # dists = torch.cat([dist, dist])
 
         # LOG SPACE
         free_energy = dists * density

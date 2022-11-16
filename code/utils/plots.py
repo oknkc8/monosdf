@@ -32,10 +32,10 @@ def plot(implicit_network, indices, plot_data, path, epoch, img_res, plot_nimgs,
         # concat output images to single large image
         images = []
         for name in ["rendering", "depth", "normal", "warp"]:
-            images.append(cv2.imread('{0}/{1}/{1}_{2}_{3}.png'.format(path, name, epoch, indices[0])))        
+            images.append(cv2.imread('{0}/{1}/{1}_{2:06d}_{3}.png'.format(path, name, epoch, indices[0])))        
 
         images = np.concatenate(images, axis=1)
-        cv2.imwrite('{0}/merge/merge_{1}_{2}.png'.format(path, epoch, indices[0]), images)
+        cv2.imwrite('{0}/merge/merge_{1:06d}_{2}.png'.format(path, epoch, indices[0]), images)
 
     surface_traces = get_surface_sliding(path=path,
                                          epoch=epoch,
@@ -151,7 +151,7 @@ def get_surface_sliding(path, epoch, sdf, resolution=100, grid_boundary=[-2.0, 2
     if return_mesh:
         return combined
     else:
-        combined.export('{0}/surface/surface_{1}.ply'.format(path, epoch), 'ply')    
+        combined.export('{0}/surface/surface_{1:06d}.ply'.format(path, epoch), 'ply')    
         
 def get_3D_scatter_trace(points, name='', size=3, caption=None):
     assert points.shape[1] == 3, "3d scatter plot input points are not correctely shaped "
@@ -230,7 +230,7 @@ def get_surface_trace(path, epoch, sdf, resolution=100, grid_boundary=[-2.0, 2.0
                             lightposition=dict(x=0, y=0, z=-1), showlegend=True)]
         '''
         meshexport = trimesh.Trimesh(verts, faces, normals)
-        meshexport.export('{0}/surface_{1}.ply'.format(path, epoch), 'ply')
+        meshexport.export('{0}/surface_{1:06d}.ply'.format(path, epoch), 'ply')
 
         if return_mesh:
             return meshexport
@@ -480,7 +480,7 @@ def plot_normal_maps(normal_maps, ground_true, path, epoch, plot_nrow, img_res, 
     tensor = (tensor * scale_factor).astype(np.uint8)
 
     img = Image.fromarray(tensor)
-    img.save('{0}/normal/normal_{1}_{2}.png'.format(path, epoch, indices[0]))
+    img.save('{0}/normal/normal_{1:06d}_{2}.png'.format(path, epoch, indices[0]))
 
     #import pdb; pdb.set_trace()
     #trans_topil(normal_maps_plot[0, :, :, 260:260+680]).save('{0}/2normal_{1}.png'.format(path, epoch))
@@ -503,9 +503,9 @@ def plot_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res, indice
 
     img = Image.fromarray(tensor)
     if exposure:
-        img.save('{0}/rendering/exposure_{1}_{2}.png'.format(path, epoch, indices[0]))
+        img.save('{0}/rendering/exposure_{1:06d}_{2}.png'.format(path, epoch, indices[0]))
     else:
-        img.save('{0}/rendering/rendering_{1}_{2}.png'.format(path, epoch, indices[0]))
+        img.save('{0}/rendering/rendering_{1:06d}_{2}.png'.format(path, epoch, indices[0]))
 
 def plot_warp_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res, indices, exposure=False):
     ground_true = ground_true.cuda()
@@ -524,9 +524,9 @@ def plot_warp_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res, i
 
     img = Image.fromarray(tensor)
     if exposure:
-        img.save('{0}/rendering/exposure_{1}_{2}.png'.format(path, epoch, indices[0]))
+        img.save('{0}/rendering/exposure_{1:06d}_{2}.png'.format(path, epoch, indices[0]))
     else:
-        img.save('{0}/warp/warp_{1}_{2}.png'.format(path, epoch, indices[0]))
+        img.save('{0}/warp/warp_{1:06d}_{2}.png'.format(path, epoch, indices[0]))
 
 def plot_depth_maps(depth_maps, ground_true, path, epoch, plot_nrow, img_res, indices):
     ground_true = ground_true.cuda()
@@ -542,7 +542,7 @@ def plot_depth_maps(depth_maps, ground_true, path, epoch, plot_nrow, img_res, in
                                          nrow=plot_nrow).cpu().detach().numpy()
     tensor = tensor.transpose(1, 2, 0)
     
-    save_path = '{0}/depth/depth_{1}_{2}.png'.format(path, epoch, indices[0])
+    save_path = '{0}/depth/depth_{1:06d}_{2}.png'.format(path, epoch, indices[0])
     
     plt.imsave(save_path, tensor[:, :, 0], cmap='viridis')
     

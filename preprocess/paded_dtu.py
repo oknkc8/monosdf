@@ -7,7 +7,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-
+from tqdm import tqdm
 
 scans = [24, 37, 40, 55, 63, 65, 69, 83, 97, 105, 106, 110, 114, 118, 122]
 
@@ -37,7 +37,7 @@ for scan in scans:
     H, W = 1200, 1600
     offset = (W-H) // 2
 
-    for idx, (a, b, c) in enumerate(zip(image_paths, np_depth_paths, np_normal_paths)):
+    for idx, (a, b, c) in tqdm(enumerate(zip(image_paths, np_depth_paths, np_normal_paths))):
 
         image = cv2.imread(a)
         depth = np.load(b)

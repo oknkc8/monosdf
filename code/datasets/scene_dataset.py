@@ -142,6 +142,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
                  near_pose_trans=0.1
                  ):
 
+        self.scan_id = scan_id
         self.instance_dir = os.path.join('../data', data_dir, 'scan{0}'.format(scan_id))
 
         self.total_pixels = img_res[0] * img_res[1]
@@ -261,15 +262,30 @@ class SceneDatasetDN(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         src_idxs = None
         if self.num_views >= 0:
-            image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
-            image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views] # for dtu scan 24
-            # idx = image_ids[random.randint(0, self.num_views - 1)]
-            # idx = image_ids[idx % self.num_views]
-            
-            # src_idx = idx
-            # while src_idx == idx:
-            #     src_idx = random.randint(0, self.num_views - 1)
-
+            # for dtu
+            if self.scan_id == 24:
+                image_ids = [2, 1, 7, 40, 44, 48, 5, 8, 13][:self.num_views]
+            elif self.scan_id == 37:
+                image_ids = [0, 25, 11, 40, 44, 48, 5, 8, 13][:self.num_views]
+            elif self.scan_id == 55:
+                image_ids = [42, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
+            elif self.scan_id == 63:
+                image_ids = [42, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
+            elif self.scan_id == 65:
+                image_ids = [25, 22, 28, 40, 44, 48, 5, 8, 13][:self.num_views]
+            elif self.scan_id == 83:
+                # image_ids = [42, 23, 29, 40, 44, 48, 5, 8, 13][:self.num_views]
+                image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+            elif self.scan_id == 105:
+                # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
+                image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+            elif self.scan_id == 114:
+                image_ids = [36, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
+            elif self.scan_id == 118:
+                image_ids = [63, 60, 59, 40, 44, 48, 0, 8, 13][:self.num_views]
+            else:
+                image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                # image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views]
             src_idxs = image_ids[:idx] + image_ids[idx+1:]
             idx = image_ids[idx]
             

@@ -28,13 +28,17 @@ class UniformSampler(RaySampler):
         self.anneal_mid_perc = anneal_mid_perc
 
     # dtu and bmvs
-    def get_z_vals_dtu_bmvs(self, ray_dirs, cam_loc, model):
+    def get_z_vals_dtu_bmvs(self, ray_dirs, cam_loc, model, max_dist=None):
         if not self.take_sphere_intersection:
             near, far = self.near * torch.ones(ray_dirs.shape[0], 1).cuda(), self.far * torch.ones(ray_dirs.shape[0], 1).cuda()
         else:
             sphere_intersections = rend_util.get_sphere_intersections(cam_loc, ray_dirs, r=self.scene_bounding_sphere)
             near = self.near * torch.ones(ray_dirs.shape[0], 1).cuda()
             far = sphere_intersections[:,1:]
+
+        if max_dist is not None:
+            near = self.near * torch.zeros(ray_dirs.shape[0], 1).cuda()
+            far = max_dist.unsqueeze(-1).cuda()
 
         t_vals = torch.linspace(0., 1., steps=self.N_samples).cuda()
         z_vals = near * (1. - t_vals) + far * (t_vals)
@@ -139,11 +143,11 @@ class ErrorBoundSampler(RaySampler):
                                                          anneal_init_perc=anneal_init_perc,
                                                          anneal_mid_perc=anneal_mid_perc)
 
-    def get_z_vals(self, ray_dirs, cam_loc, model):
+    def get_z_vals(self, ray_dirs, cam_loc, model, max_dist=None):
         beta0 = model.density.get_beta().detach()
 
         # Start with uniform sampling
-        z_vals, near, far = self.uniform_sampler.get_z_vals_dtu_bmvs(ray_dirs, cam_loc, model)
+        z_vals, near, far = self.uniform_sampler.get_z_vals_dtu_bmvs(ray_dirs, cam_loc, model, max_dist)
         samples, samples_idx = z_vals, None
 
         # Get maximum beta from the upper bound (Lemma 2)
@@ -270,6 +274,9 @@ class ErrorBoundSampler(RaySampler):
         near, far = self.near * torch.ones(ray_dirs.shape[0], 1).cuda(), self.far * torch.ones(ray_dirs.shape[0],1).cuda()
         if self.inverse_sphere_bg: # if inverse sphere then need to add the far sphere intersection
             far = rend_util.get_sphere_intersections(cam_loc, ray_dirs, r=self.scene_bounding_sphere)[:,1:]
+        if max_dist is not None:
+            near = self.near * torch.zeros(ray_dirs.shape[0], 1).cuda()
+            far = max_dist.unsqueeze(-1).cuda()
 
         if self.N_samples_extra > 0:
             if model.training:
@@ -287,7 +294,7 @@ class ErrorBoundSampler(RaySampler):
         z_samples_eik = torch.gather(z_vals, 1, idx.unsqueeze(-1))
 
         if self.inverse_sphere_bg:
-            z_vals_inverse_sphere, _, _ = self.inverse_sphere_sampler.get_z_vals_dtu_bmvs(ray_dirs, cam_loc, model)
+            z_vals_inverse_sphere, _, _ = self.inverse_sphere_sampler.get_z_vals_dtu_bmvs(ray_dirs, cam_loc, model, max_dist)
             z_vals_inverse_sphere = z_vals_inverse_sphere * (1./self.scene_bounding_sphere)
             z_vals = (z_vals, z_vals_inverse_sphere)
 
