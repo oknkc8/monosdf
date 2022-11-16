@@ -33,10 +33,12 @@ def cull_scan(scan, mesh_path, result_mesh_file):
 
     intrinsics_all = []
     pose_all = []
+    # import pdb
     for scale_mat, world_mat in tqdm(zip(scale_mats, world_mats)):
         P = world_mat @ scale_mat
         P = P[:3, :4]
         intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
+        # pdb.set_trace()
         intrinsics_all.append(torch.from_numpy(intrinsics).float())
         pose_all.append(torch.from_numpy(pose).float())
     

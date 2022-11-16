@@ -37,7 +37,7 @@ class UniformSampler(RaySampler):
             far = sphere_intersections[:,1:]
 
         if max_dist is not None:
-            near = self.near * torch.zeros(ray_dirs.shape[0], 1).cuda()
+            near = self.near * torch.ones(ray_dirs.shape[0], 1).cuda()
             far = max_dist.unsqueeze(-1).cuda()
 
         t_vals = torch.linspace(0., 1., steps=self.N_samples).cuda()
@@ -275,7 +275,7 @@ class ErrorBoundSampler(RaySampler):
         if self.inverse_sphere_bg: # if inverse sphere then need to add the far sphere intersection
             far = rend_util.get_sphere_intersections(cam_loc, ray_dirs, r=self.scene_bounding_sphere)[:,1:]
         if max_dist is not None:
-            near = self.near * torch.zeros(ray_dirs.shape[0], 1).cuda()
+            near = self.near * torch.ones(ray_dirs.shape[0], 1).cuda()
             far = max_dist.unsqueeze(-1).cuda()
 
         if self.N_samples_extra > 0:
