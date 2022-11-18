@@ -265,11 +265,13 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             # for dtu
             if self.scan_id == 24:
                 image_ids = [2, 1, 7, 40, 44, 48, 5, 8, 13][:self.num_views]
+                # image_ids = [23, 24, 33, 40, 44, 48, 5, 8, 13][:self.num_views]
             elif self.scan_id == 37:
                 # image_ids = [27, 7, 2, 40, 44, 48, 5, 8, 13][:self.num_views]
                 image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
             elif self.scan_id == 40:
-                image_ids = [13, 16, 24, 40, 44, 48, 0, 8, 13][:self.num_views]
+                image_ids = [22, 24, 25, 40, 44, 48, 0, 8, 13][:self.num_views]
+                # image_ids = [6, 10, 14, 40, 44, 48, 0, 8, 13][:self.num_views]
             elif self.scan_id == 55:
                 image_ids = [42, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
             elif self.scan_id == 63:
@@ -284,6 +286,12 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             elif self.scan_id == 105:
                 # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
                 image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+            elif self.scan_id == 106:
+                # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
+                image_ids = [53, 57, 49, 40, 44, 48, 0, 8, 13][:self.num_views]
+            elif self.scan_id == 110:
+                # image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                image_ids = [11, 18, 44, 40, 49, 48, 0, 8, 13][:self.num_views]
             elif self.scan_id == 114:
                 image_ids = [36, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
             elif self.scan_id == 118:
@@ -293,6 +301,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             else:
                 image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
                 # image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views]
+            image_ids = [23, 24, 33, 40, 44, 48, 0, 8, 13][:self.num_views]
             src_idxs = image_ids[:idx] + image_ids[idx+1:]
             idx = image_ids[idx]
             

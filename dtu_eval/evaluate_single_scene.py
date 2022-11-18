@@ -18,7 +18,7 @@ sys.path.append("../code")
 from utils import rend_util
 
 
-def cull_scan(scan, mesh_path, result_mesh_file):
+def cull_scan(scan, mesh_path, result_mesh_file, sparseneus=False):
     
     # load poses
     instance_dir = os.path.join('../data/DTU', 'scan{0}'.format(scan))
@@ -35,7 +35,10 @@ def cull_scan(scan, mesh_path, result_mesh_file):
     pose_all = []
     # import pdb
     for scale_mat, world_mat in tqdm(zip(scale_mats, world_mats)):
-        P = world_mat @ scale_mat
+        if not sparseneus:
+            P = world_mat @ scale_mat
+        else:
+            P = world_mat
         P = P[:3, :4]
         intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
         # pdb.set_trace()
@@ -100,8 +103,9 @@ def cull_scan(scan, mesh_path, result_mesh_file):
     mesh.update_faces(face_mask)
     
     # transform vertices to world 
-    scale_mat = scale_mats[0]
-    mesh.vertices = mesh.vertices * scale_mat[0, 0] + scale_mat[:3, 3][None]
+    if not sparseneus:
+        scale_mat = scale_mats[0]
+        mesh.vertices = mesh.vertices * scale_mat[0, 0] + scale_mat[:3, 3][None]
     mesh.export(result_mesh_file)
     del mesh
     
@@ -116,6 +120,7 @@ if __name__ == "__main__":
     parser.add_argument('--scan_id', type=str,  help='scan id of the input mesh')
     parser.add_argument('--output_dir', type=str, default='evaluation_results_single', help='path to the output folder')
     parser.add_argument('--DTU', type=str,  default='Offical_DTU_Dataset', help='path to the GT DTU point clouds')
+    parser.add_argument('--sparseneus', type=bool,  default=False, help='method for evaluation')
     args = parser.parse_args()
 
 
@@ -123,12 +128,14 @@ if __name__ == "__main__":
     out_dir = args.output_dir
     Path(out_dir).mkdir(parents=True, exist_ok=True)
 
+    print(args.input_mesh)
+
     scan = args.scan_id
     ply_file = args.input_mesh
 
     result_mesh_file = os.path.join(out_dir, "culled_mesh.ply")
 
-    cull_scan(scan, ply_file, result_mesh_file)
+    cull_scan(scan, ply_file, result_mesh_file, args.sparseneus)
 
     cmd = f"python eval.py --data {result_mesh_file} --scan {scan} --mode mesh --dataset_dir {Offical_DTU_Dataset} --vis_out_dir {out_dir}"
     os.system(cmd)

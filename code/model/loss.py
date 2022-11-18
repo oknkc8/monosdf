@@ -383,6 +383,7 @@ class MonoSDFLoss(nn.Module):
         npx, nsrc, npatch, _ = rgb_values.shape
 
         warp_mask = warp_mask.float()
+        warp_mask[warp_mask == 0] = 1e-8
 
         if self.patch_rgb_loss == "l1":
             num = torch.sum(warp_mask.unsqueeze(-1).unsqueeze(-1) * torch.abs(rgb_values - rgb_gt.unsqueeze(1)),
@@ -410,9 +411,13 @@ class MonoSDFLoss(nn.Module):
             return torch.tensor(0.0).cuda().float(), torch.ones_like(warp_mask[:, 0])
 
         warp_mask = warp_mask.float()
+        warp_mask[warp_mask == 0] = 1e-8
 
         # pdb.set_trace()
-
+        if torch.isnan(warp_mask).sum() != 0:
+            pdb.set_trace()
+        if torch.isnan(rgb_values).sum() != 0:
+            pdb.set_trace()
         num = torch.sum(warp_mask.unsqueeze(2) * torch.abs(rgb_values - rgb_gt.unsqueeze(1)), dim=1).sum(dim=1)
         denom = torch.sum(warp_mask, dim=1)
 

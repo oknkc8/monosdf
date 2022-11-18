@@ -572,6 +572,8 @@ class MonoSDFNetwork(nn.Module):
                 warping_mask_full = warping_mask_full.view(N_src, N_rays, -1).permute(1, 2, 0).float()
                 warping_mask_pixel = torch.sum(weights.unsqueeze(-1) * warping_mask_full, dim=1)
                 warping_mask_pixel += torch.ones_like(warping_mask_pixel) * all_cumulated.unsqueeze(1)
+                if warping_mask_pixel.isnan().sum() != 0:
+                    pdb.set_trace()
                 valid_hom_mask_pixel = None
 
             # occlusion mask
@@ -605,6 +607,8 @@ class MonoSDFNetwork(nn.Module):
 
                     occlusion_mask = 1 - torch.prod(1 - alpha_src, dim=-1)
                     occlusion_mask = occlusion_mask.reshape(N_rays, N_src)
+                    if occlusion_mask.isnan().sum() != 0:
+                        pdb.set_trace()
                     if warping_mask_patch is not None:
                         occlusion_mask_patch = occlusion_mask.reshape(N_rays, N_src)
                         valid_mask_patch = network_object_mask.unsqueeze(-1) & (warping_mask_patch > 0.5)

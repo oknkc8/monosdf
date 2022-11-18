@@ -1,6 +1,7 @@
 import abc
 from tkinter.messagebox import NO
 import torch
+import pdb
 
 from utils import rend_util
 
@@ -184,7 +185,7 @@ class ErrorBoundSampler(RaySampler):
             d_star[second_cond] = c[second_cond]
             s = (a + b + c) / 2.0
             area_before_sqrt = s * (s - a) * (s - b) * (s - c)
-            mask = ~first_cond & ~second_cond & (b + c - a > 0)
+            mask = ~first_cond & ~second_cond & (b + c - a > 0) & (area_before_sqrt >= 0)
             d_star[mask] = (2.0 * torch.sqrt(area_before_sqrt[mask])) / (a[mask])
             d_star = (d[:, 1:].sign() * d[:, :-1].sign() == 1) * d_star  # Fixing the sign
 
@@ -267,6 +268,8 @@ class ErrorBoundSampler(RaySampler):
             # Adding samples if we not converged
             if not_converge and total_iters < self.max_total_iters:
                 z_vals, samples_idx = torch.sort(torch.cat([z_vals, samples], -1), -1)
+            if z_vals.isnan().sum() != 0:
+                pdb.set_trace()
 
 
         z_samples = samples
