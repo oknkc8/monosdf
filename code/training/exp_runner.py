@@ -9,7 +9,7 @@ from training.monosdf_train import MonoSDFTrainRunner
 import datetime
 
 if __name__ == '__main__':
-
+    torch.autograd.set_detect_anomaly(True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1, help='input batch size')
     parser.add_argument('--nepoch', type=int, default=20000, help='number of epochs to train for')

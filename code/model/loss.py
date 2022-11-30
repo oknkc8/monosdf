@@ -587,7 +587,7 @@ class MonoSDFLoss(nn.Module):
         loss = rgb_loss + \
                self.eikonal_weight * eikonal_loss +\
                self.normal_smooth_weight * normal_smooth_loss +\
-               patch_depth_smooth_weight * patch_depth_smooth_loss +\
+               decay * patch_depth_smooth_weight * patch_depth_smooth_loss +\
                patch_normal_smooth_weight * patch_normal_smooth_loss +\
                entropy_weight * entropy_loss +\
                decay * warped_rgb_weight * (warped_rgb_loss_patch + warped_rgb_loss_pixel) +\

@@ -98,9 +98,9 @@ class MonoSDFTrainRunner():
         self.max_total_iters = self.conf.get_int('train.max_total_iters', default=200000)
         self.ds_len = len(self.train_dataset)
         print('Finish loading data. Data-set size: {0}'.format(self.ds_len))
-        if scan_id < 24 and scan_id > 0: # BlendedMVS, running for 200k iterations
-            self.nepochs = int(self.max_total_iters / self.ds_len)
-            print('RUNNING FOR {0}'.format(self.nepochs))
+        # if scan_id < 24 and scan_id > 0: # BlendedMVS, running for 200k iterations
+        self.nepochs = int(self.max_total_iters / self.ds_len)
+        print('RUNNING FOR {0}'.format(self.nepochs))
 
         self.train_dataloader = torch.utils.data.DataLoader(self.train_dataset,
                                                             batch_size=self.batch_size,
@@ -174,8 +174,8 @@ class MonoSDFTrainRunner():
         self.plot_freq = self.conf.get_int('train.plot_freq')
         self.checkpoint_freq = self.conf.get_int('train.checkpoint_freq', default=100)
         self.split_n_pixels = self.conf.get_int('train.split_n_pixels', default=10000)
-        self.start_reg_step = self.conf.get_int('train.start_reg_step')
-        self.warp_pixel_patch_both = self.conf.get_int('train.warp_pixel_patch_both')
+        self.start_reg_step = self.conf.get_int('train.start_reg_step', default=0)
+        self.warp_pixel_patch_both = self.conf.get_int('train.warp_pixel_patch_both', default=True)
         self.plot_conf = self.conf.get_config('plot')
         self.backproject = BackprojectDepth(1, self.img_res[0], self.img_res[1]).cuda()
 
@@ -257,7 +257,8 @@ class MonoSDFTrainRunner():
                 del res
                 torch.cuda.empty_cache()
 
-            if epoch <= self.start_reg_step:
+            # if epoch <= self.start_reg_step:
+            if epoch <= self.nepochs / 2:
                 # pixel warp
                 if epoch == 0:
                     tmp_h_patch_size = self.h_patch_size

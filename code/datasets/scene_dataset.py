@@ -8,6 +8,7 @@ import numpy as np
 import utils.general as utils
 from utils import rend_util
 from glob import glob
+from scipy.spatial.transform import Rotation as R
 import cv2
 import random
 
@@ -148,7 +149,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
         self.total_pixels = img_res[0] * img_res[1]
         self.img_res = img_res
         self.num_views = num_views
-        assert num_views in [-1, 3, 6, 9]
+        # assert num_views in [-1, 2, 3, 5, 6, 9, 10]
         
         assert os.path.exists(self.instance_dir), "Data directory is empty"
 
@@ -257,54 +258,97 @@ class SceneDatasetDN(torch.utils.data.Dataset):
 
     def __len__(self):
         # return self.n_images
-        return self.n_images if self.num_views < 0 else self.num_views
+        if 'dtu' in self.instance_dir:
+            return self.n_images if self.num_views < 0 else self.num_views
+        elif 'scannet' in self.instance_dir or 'Replica' in self.instance_dir:
+            return self.n_images if self.num_views < 0 else self.n_images // self.num_views
 
     def __getitem__(self, idx):
         src_idxs = None
         if self.num_views >= 0:
             # for dtu
-            if self.scan_id == 24:
-                image_ids = [2, 1, 7, 40, 44, 48, 5, 8, 13][:self.num_views]
-                # image_ids = [23, 24, 33, 40, 44, 48, 5, 8, 13][:self.num_views]
-            elif self.scan_id == 37:
-                # image_ids = [27, 7, 2, 40, 44, 48, 5, 8, 13][:self.num_views]
-                image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
-            elif self.scan_id == 40:
-                image_ids = [22, 24, 25, 40, 44, 48, 0, 8, 13][:self.num_views]
-                # image_ids = [6, 10, 14, 40, 44, 48, 0, 8, 13][:self.num_views]
-            elif self.scan_id == 55:
-                image_ids = [42, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
-            elif self.scan_id == 63:
-                image_ids = [42, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
-            elif self.scan_id == 65:
-                image_ids = [25, 22, 28, 40, 44, 48, 5, 8, 13][:self.num_views]
-            elif self.scan_id == 69:
-                image_ids = [24, 30, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
-            elif self.scan_id == 83:
-                # image_ids = [42, 23, 29, 40, 44, 48, 5, 8, 13][:self.num_views]
-                image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
-            elif self.scan_id == 105:
-                # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
-                image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
-            elif self.scan_id == 106:
-                # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
-                image_ids = [53, 57, 49, 40, 44, 48, 0, 8, 13][:self.num_views]
-            elif self.scan_id == 110:
-                # image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
-                image_ids = [11, 18, 44, 40, 49, 48, 0, 8, 13][:self.num_views]
-            elif self.scan_id == 114:
-                image_ids = [36, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
-            elif self.scan_id == 118:
-                image_ids = [53, 57, 49, 40, 44, 48, 0, 8, 13][:self.num_views]
-            elif self.scan_id == 122:
-                image_ids = [53, 57, 49, 40, 44, 48, 0, 8, 13][:self.num_views]
-            else:
-                image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
-                # image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views]
-            image_ids = [23, 24, 33, 40, 44, 48, 0, 8, 13][:self.num_views]
-            src_idxs = image_ids[:idx] + image_ids[idx+1:]
-            idx = image_ids[idx]
-            
+            if 'dtu' in self.instance_dir:
+                if self.scan_id == 24:
+                    image_ids = [2, 1, 7, 40, 44, 48, 5, 8, 13][:self.num_views]
+                    # image_ids = [23, 24, 33, 40, 44, 48, 5, 8, 13][:self.num_views]
+                elif self.scan_id == 37:
+                    # image_ids = [27, 7, 2, 40, 44, 48, 5, 8, 13][:self.num_views]
+                    image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 40:
+                    image_ids = [22, 24, 25, 40, 44, 48, 0, 8, 13][:self.num_views]
+                    # image_ids = [6, 10, 14, 40, 44, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 55:
+                    image_ids = [42, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
+                elif self.scan_id == 63:
+                    image_ids = [42, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
+                elif self.scan_id == 65:
+                    image_ids = [25, 22, 28, 40, 44, 48, 5, 8, 13][:self.num_views]
+                elif self.scan_id == 69:
+                    image_ids = [24, 30, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
+                elif self.scan_id == 83:
+                    # image_ids = [42, 23, 29, 40, 44, 48, 5, 8, 13][:self.num_views]
+                    image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 105:
+                    # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
+                    image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 106:
+                    # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
+                    image_ids = [53, 57, 49, 40, 44, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 110:
+                    # image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                    image_ids = [11, 18, 44, 40, 49, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 114:
+                    image_ids = [36, 23, 13, 40, 44, 48, 5, 8, 13][:self.num_views]
+                elif self.scan_id == 118:
+                    image_ids = [53, 57, 49, 40, 44, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 122:
+                    image_ids = [53, 57, 49, 40, 44, 48, 0, 8, 13][:self.num_views]
+                else:
+                    image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                    # image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views]
+                image_ids = [23, 24, 33, 40, 44, 48, 0, 8, 13][:self.num_views]
+                src_idxs = image_ids[:idx] + image_ids[idx+1:]
+                idx = image_ids[idx]
+
+            elif 'scannet' in self.instance_dir or 'Replica' in self.instance_dir:
+                image_ids = [i for i in range(0, self.n_images, self.num_views)]
+                idx = image_ids[idx]
+                
+                src_idxs = []
+                """
+                ref_pose = self.pose_all[idx].numpy()
+                for img_idx in image_ids:
+                    if idx == img_idx:
+                        continue
+                    src_pose = self.pose_all[img_idx].numpy()
+                    # inv_src_pose = self.inv_pose_all[img_idx]
+                    # relative_pose = inv_src_pose @ ref_pose
+                    # r = R.from_matrix()
+                    # dist = np.linalg.norm(relative_pose[:3, 3])
+
+                    # r = R.from_matrix(np.linalg.inv(src_pose[:3, :3]) @ ref_pose[:3, :3])
+                    # angle = r.as_euler('xyz', degrees=True)
+                    angle = np.arccos(
+                        ((np.linalg.inv(src_pose[:3, :3]) @ ref_pose[:3, :3] @ np.array([0, 0, 1]).T) * np.array(
+                            [0, 0, 1])).sum()) / np.pi * 180
+                    dis = np.linalg.norm(src_pose[:3, 3] - ref_pose[:3, 3])
+                    
+                    if angle <= 15 and dis <= 0.5:
+                        src_idxs.append(img_idx)
+                        
+                n_src_idxs = len(src_idxs)
+                src_idxs = src_idxs[n_src_idxs // 2 - 1 : n_src_idxs // 2 + 2]
+                if len(src_idxs) == 1:
+                    pdb.set_trace()
+                if len(src_idxs) == 0:
+                    src_idxs = None
+                """
+                if idx - self.num_views >= 0 and (idx - self.num_views) not in src_idxs:
+                    src_idxs.append(idx - self.num_views)
+                if idx + self.num_views < self.n_images and (idx + self.num_views) not in src_idxs:
+                    src_idxs.append(idx + self.num_views)
+                
+                
         
         uv = np.mgrid[0:self.img_res[0], 0:self.img_res[1]].astype(np.int32)
         uv = torch.from_numpy(np.flip(uv, axis=0).copy()).float()

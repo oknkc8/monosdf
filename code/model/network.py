@@ -557,9 +557,11 @@ class MonoSDFNetwork(nn.Module):
 
                 # pdb.set_trace()                
                 grid_px, in_front = self.project(points_flat, warping_params["inv_src_pose"][:, :3], warping_params["src_intr"])
-                grid = rend_util.normalize(grid_px.squeeze(0), h, w, clamp=10)
+                grid = rend_util.normalize(grid_px, h, w, clamp=10)
 
-                warping_mask_full = (in_front.squeeze(0) & (grid < 1).all(dim=-1) & (grid > -1).all(dim=-1))
+                # pdb.set_trace()
+                warping_mask_full = (in_front & (grid < 1).all(dim=-1) & (grid > -1).all(dim=-1))
+                # pdb.set_trace()
                 # warping_mask_full = ((grid < 1).all(dim=-1) & (grid > -1).all(dim=-1))
 
                 # pdb.set_trace()
@@ -684,7 +686,7 @@ class MonoSDFNetwork(nn.Module):
         pose = input["pose"]
         warping_params = None
         
-        if self.use_warped_colors:
+        if self.use_warped_colors and 'src_img' not in input:
             # ref_intrinsics = input["intrinsics"]
             src_intr = input['src_intrinsics'][0][:, :3, :3]
             inv_ref_intr = input['inv_intrinsics'][0][:3, :3]
