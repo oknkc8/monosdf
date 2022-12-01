@@ -258,7 +258,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
 
     def __len__(self):
         # return self.n_images
-        if 'dtu' in self.instance_dir:
+        if 'DTU' in self.instance_dir:
             return self.n_images if self.num_views < 0 else self.num_views
         elif 'scannet' in self.instance_dir or 'Replica' in self.instance_dir:
             return self.n_images if self.num_views < 0 else self.n_images // self.num_views
@@ -267,7 +267,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
         src_idxs = None
         if self.num_views >= 0:
             # for dtu
-            if 'dtu' in self.instance_dir:
+            if 'DTU' in self.instance_dir:
                 if self.scan_id == 24:
                     image_ids = [2, 1, 7, 40, 44, 48, 5, 8, 13][:self.num_views]
                     # image_ids = [23, 24, 33, 40, 44, 48, 5, 8, 13][:self.num_views]
@@ -306,7 +306,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
                 else:
                     image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
                     # image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views]
-                image_ids = [23, 24, 33, 40, 44, 48, 0, 8, 13][:self.num_views]
+                # image_ids = [23, 24, 33, 40, 44, 48, 0, 8, 13][:self.num_views]
                 src_idxs = image_ids[:idx] + image_ids[idx+1:]
                 idx = image_ids[idx]
 
