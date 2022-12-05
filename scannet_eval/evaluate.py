@@ -137,9 +137,9 @@ def refuse(mesh, poses, K):
     return volume.extract_triangle_mesh()
 
 
-root_dir = "../exps/"
-exp_name = "scannet_mlp"
-out_dir = "evaluation/scannet_mlp"
+root_dir = "../exps_ablation_scannet_new/"
+exp_name = "scannet_grids_sparseviews_reg"
+out_dir = "evaluation/scannet_grid_sparseviews3_reg"
 Path(out_dir).mkdir(parents=True, exist_ok=True)
 
 
@@ -151,8 +151,9 @@ for idx, scan in enumerate(scenes):
     cur_root = os.path.join(root_dir, cur_exp)
     # use first timestamps
     dirs = sorted(os.listdir(cur_root))
-    cur_root = os.path.join(cur_root, dirs[0])
-    files = list(filter(os.path.isfile, glob.glob(os.path.join(cur_root, "plots/*.ply"))))
+    # cur_root = os.path.join(cur_root, dirs[-2]) # view2 -> -2
+    cur_root = os.path.join(cur_root, dirs[-1]) # view3 -> -1
+    files = list(filter(os.path.isfile, glob.glob(os.path.join(cur_root, "plots/surface/*.ply"))))
     
     # evalute the latest mesh
     files.sort(key=lambda x:os.path.getmtime(x))
@@ -164,6 +165,8 @@ for idx, scan in enumerate(scenes):
     # transform to world coordinate
     cam_file = f"../data/scannet/scan{idx}/cameras.npz"
     scale_mat = np.load(cam_file)['scale_mat_0']
+    import pdb
+    pdb.set_trace()
     mesh.vertices = (scale_mat[:3, :3] @ mesh.vertices.T + scale_mat[:3, 3:]).T
     
     # load pose and intrinsic for render depth 
