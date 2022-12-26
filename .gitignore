@@ -161,3 +161,5 @@ dtu_eval/Offical_DTU_Dataset/
 media/
 pretrained_models/
 meshes/
+
+dtu_grids_3views_warp_occlusion_reg_24/

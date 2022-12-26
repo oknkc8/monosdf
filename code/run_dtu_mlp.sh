@@ -5,7 +5,7 @@ python -m torch.distributed.launch \
 --nnodes=1 \
 --node_rank=0 \
 training/exp_runner.py \
---conf confs/dtu_mlp_3views_reg.conf  \
+--conf confs/dtu_mlp_3views_reg_volsdf.conf  \
 --exps_folder exps_ablation_dtu \
 --nepoch 20000 \
---scan_id 114
+--scan_id 122

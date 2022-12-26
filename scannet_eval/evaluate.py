@@ -139,7 +139,7 @@ def refuse(mesh, poses, K):
 
 root_dir = "../exps_ablation_scannet_new/"
 exp_name = "scannet_grids_sparseviews_reg"
-out_dir = "evaluation/scannet_grid_sparseviews3_reg"
+out_dir = "evaluation/scannet_grids_sparseviews3_reg"
 Path(out_dir).mkdir(parents=True, exist_ok=True)
 
 
@@ -156,7 +156,8 @@ for idx, scan in enumerate(scenes):
     files = list(filter(os.path.isfile, glob.glob(os.path.join(cur_root, "plots/surface/*.ply"))))
     
     # evalute the latest mesh
-    files.sort(key=lambda x:os.path.getmtime(x))
+    # files.sort(key=lambda x:os.path.getmtime(x))
+    files.sort()
     ply_file = files[-1]
     print(ply_file)
     
@@ -165,8 +166,8 @@ for idx, scan in enumerate(scenes):
     # transform to world coordinate
     cam_file = f"../data/scannet/scan{idx}/cameras.npz"
     scale_mat = np.load(cam_file)['scale_mat_0']
-    import pdb
-    pdb.set_trace()
+    # import pdb
+    # pdb.set_trace()
     mesh.vertices = (scale_mat[:3, :3] @ mesh.vertices.T + scale_mat[:3, 3:]).T
     
     # load pose and intrinsic for render depth 

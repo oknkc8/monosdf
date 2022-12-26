@@ -191,7 +191,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             P = world_mat @ scale_mat
             P = P[:3, :4]
             intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
-            # pdb.set_trace()
+            pdb.set_trace()
 
             # because we do resize and center crop 384x384 when using omnidata model, we need to adjust the camera intrinsic accordingly
             if center_crop_type == 'center_crop_for_replica':
@@ -288,6 +288,8 @@ class SceneDatasetDN(torch.utils.data.Dataset):
                 elif self.scan_id == 83:
                     # image_ids = [42, 23, 29, 40, 44, 48, 5, 8, 13][:self.num_views]
                     image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
+                elif self.scan_id == 97:
+                    image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
                 elif self.scan_id == 105:
                     # image_ids = [26, 23, 35, 40, 44, 48, 5, 8, 13][:self.num_views]
                     image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
@@ -306,7 +308,7 @@ class SceneDatasetDN(torch.utils.data.Dataset):
                 else:
                     image_ids = [25, 22, 28, 40, 44, 48, 0, 8, 13][:self.num_views]
                     # image_ids = [42, 23, 13, 40, 44, 48, 0, 8, 13][:self.num_views]
-                # image_ids = [23, 24, 33, 40, 44, 48, 0, 8, 13][:self.num_views]
+                image_ids = [23, 24, 33, 40, 44, 48, 0, 8, 13][:self.num_views]
                 src_idxs = image_ids[:idx] + image_ids[idx+1:]
                 idx = image_ids[idx]
 
@@ -367,6 +369,8 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             "mask": self.mask_images[idx],
             "normal": self.normal_images[idx]
         }
+
+        pdb.set_trace()
 
         if self.sampling_idx is not None:
             ground_truth["rgb"] = self.rgb_images[idx][self.sampling_idx, :]

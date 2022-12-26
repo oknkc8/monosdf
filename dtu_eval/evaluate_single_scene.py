@@ -34,6 +34,7 @@ def cull_scan(scan, mesh_path, result_mesh_file, sparseneus=False):
     intrinsics_all = []
     pose_all = []
     # import pdb
+    # pdb.set_trace()
     for scale_mat, world_mat in tqdm(zip(scale_mats, world_mats)):
         if not sparseneus:
             P = world_mat @ scale_mat
@@ -44,7 +45,9 @@ def cull_scan(scan, mesh_path, result_mesh_file, sparseneus=False):
         # pdb.set_trace()
         intrinsics_all.append(torch.from_numpy(intrinsics).float())
         pose_all.append(torch.from_numpy(pose).float())
-    
+
+    # import pdb
+    # pdb.set_trace()
     # load mask
     mask_dir = '{0}/mask'.format(instance_dir)
     mask_paths = sorted(glob.glob(os.path.join(mask_dir, "*.png")))

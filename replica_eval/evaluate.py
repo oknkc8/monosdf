@@ -14,12 +14,12 @@ import subprocess
 scans = ["room0", "room1", "room2", "office0", "office1", "office2", "office3", "office4"]
 
 
-root_dir = "../exps"
-exp_name = "replica_mlp"
-out_dir = "evaluation/replica_mlp"
+root_dir = "../exps_ablation_replica_new"
+exp_name = "replica_grids_sparseviews_reg"
+out_dir = "evaluation/replica_grids_sparseviews_reg_nowarp"
 Path(out_dir).mkdir(parents=True, exist_ok=True)
 
-evaluation_txt_file = "evaluation/replica_mlp.csv"
+evaluation_txt_file = "evaluation/replica_grids_sparseviews_reg_nowarp.csv"
 evaluation_txt_file = open(evaluation_txt_file, 'w')
 
 
@@ -33,8 +33,10 @@ for idx, scan in enumerate(scans):
     cur_root = os.path.join(root_dir, cur_exp)
     # use first timestamps
     dirs = sorted(os.listdir(cur_root))
-    cur_root = os.path.join(cur_root, dirs[0])
-    files = list(filter(os.path.isfile, glob.glob(os.path.join(cur_root, "plots/*.ply"))))
+    # cur_root = os.path.join(cur_root, dirs[-3]) # ours
+    # cur_root = os.path.join(cur_root, dirs[-2]) # ours-nodepth
+    cur_root = os.path.join(cur_root, dirs[-1]) # ours-nowarp
+    files = list(filter(os.path.isfile, glob.glob(os.path.join(cur_root, "plots/surface/*.ply"))))
     
     files.sort(key=lambda x:os.path.getmtime(x))
     ply_file = files[-1]

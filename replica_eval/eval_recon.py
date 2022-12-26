@@ -147,7 +147,8 @@ def calc_3d_metric(rec_meshfile, gt_meshfile, align=False):
     
     precision_ratio_rec = completion_ratio(
         rec_pc_tri.vertices, gt_pc_tri.vertices)
-    
+
+    chamfer = (accuracy_rec + completion_rec) / 2
     fscore = 2 * precision_ratio_rec * completion_ratio_rec / (completion_ratio_rec + precision_ratio_rec)
     
     # normal consistency
@@ -176,7 +177,8 @@ def calc_3d_metric(rec_meshfile, gt_meshfile, align=False):
     normal_comp *= 100
     normal_avg *= 100
 
-    print(accuracy_rec, completion_rec, precision_ratio_rec, completion_ratio_rec, fscore, normal_acc, normal_comp, normal_avg)
+    # print(accuracy_rec, completion_rec, precision_ratio_rec, completion_ratio_rec, chamfer, fscore, normal_acc, normal_comp, normal_avg)
+    print(chamfer, fscore)
     
     # add visualization and save the mesh output
     vis_dist = 0.05 # dist_th = 5 cm

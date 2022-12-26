@@ -590,7 +590,7 @@ class MonoSDFLoss(nn.Module):
                decay * patch_depth_smooth_weight * patch_depth_smooth_loss +\
                patch_normal_smooth_weight * patch_normal_smooth_loss +\
                entropy_weight * entropy_loss +\
-               decay * warped_rgb_weight * (warped_rgb_loss_patch + warped_rgb_loss_pixel) +\
+               decay * warped_rgb_weight * (warped_rgb_loss_patch * 0.1 + warped_rgb_loss_pixel) +\
                decay * self.depth_weight * depth_loss +\
                decay * self.normal_l1_weight * normal_l1 +\
                decay * self.normal_cos_weight * normal_cos
